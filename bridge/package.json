@@ -1,0 +1,19 @@
+{
+  "name": "codex-cc-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Persistent Claude Code CLI subagent for Codex over stdio MCP",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test test/*.test.js",
+    "doctor": "node doctor.js",
+    "smoke": "node test/live-smoke.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  }
+}

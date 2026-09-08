@@ -1,0 +1,3 @@
+The Windows Job Object supervisor in bridge/lib/windows-job-runner.cs is
+adapted from cc-codex-bridge, distributed under the Apache License 2.0.
+Modifications: Claude naming and parent-process lifetime monitoring.
