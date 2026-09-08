@@ -8,7 +8,7 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "start": "node index.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test test/backend.test.js test/bridge.test.js test/mcp.test.js",
     "doctor": "node doctor.js",
     "smoke": "node test/live-smoke.js"
   },
