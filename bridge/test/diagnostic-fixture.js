@@ -15,7 +15,8 @@ function privateModule(relative, suffix = '', replacements = {}) {
   return loaded.exports;
 }
 function profile(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-diagnostic-'));
+  // Canonicalize only our newly created root, before deriving any profile paths.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-diagnostic-')));
   const env = Object.fromEntries(Object.entries(process.env)
     .filter(([name]) => /^(SystemRoot|WINDIR|PATH|PATHEXT|COMSPEC)$/i.test(name)));
   Object.assign(env, { HOME: root, USERPROFILE: root, APPDATA: path.join(root, 'appdata'),

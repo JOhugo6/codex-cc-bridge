@@ -17,6 +17,27 @@ const { connect } = require('../doctor');
 const entry = path.join(__dirname, 'live-smoke.js');
 const { rehearse } = privateModule('live-smoke.js', 'module.exports.rehearse = rehearse;');
 
+test('diagnostic fixture canonicalizes its owned temp root before deriving the sterile profile', t => {
+  const parent = profile(t);
+  assert.equal(parent.root, fs.realpathSync.native(parent.root));
+  const target = path.join(parent.root, 'temp-target'), alias = path.join(parent.root, 'temp-alias');
+  fs.mkdirSync(target);
+  fs.symlinkSync(target, alias, 'junction');
+  // A real owned filesystem alias also exercises this regression without 8.3 names.
+  const fixture = privateModule('diagnostic-fixture.js', '', { 'node:os': { tmpdir: () => alias } });
+  const before = { ...process.env };
+  const f = fixture.profile(t);
+  assert.equal(f.root, fs.realpathSync.native(f.root));
+  assert.equal(path.dirname(f.root), target);
+  for (const name of ['HOME', 'USERPROFILE', 'TEMP', 'TMP']) assert.equal(f.env[name], f.root);
+  for (const [name, leaf] of [['APPDATA', 'appdata'], ['LOCALAPPDATA', 'localappdata'],
+    ['CLAUDE_BRIDGE_COMMAND', 'missing-claude.exe'], ['CLAUDE_BRIDGE_STATE_DIR', 'state']]) {
+    assert.equal(f.env[name], path.join(f.root, leaf));
+  }
+  assert.equal(fs.existsSync(f.env.CLAUDE_BRIDGE_COMMAND), false);
+  assert.deepEqual({ ...process.env }, before);
+});
+
 test('smoke import is inert; no opt-in or invalid arguments never start any task', t => {
   const f = profile(t);
   const imported = spawnSync(process.execPath, ['-e', `require(${JSON.stringify(entry)})`], { env: f.env, encoding: 'utf8', timeout: 10000 });

@@ -33,6 +33,13 @@ jobs:
         run: npm.cmd run test:installer
       - name: Non-inference MCP doctor
         run: npm.cmd run doctor
+      # Run AFTER the original suites so this probe cannot warm their first start.
+      - name: Bounded post-suite supervisor timing (synthetic Node child only)
+        if: ${{ !cancelled() }}
+        run: |
+          $ps7 = (Get-Command pwsh -CommandType Application -ErrorAction Stop).Source
+          node test/ci-supervisor-probe.js --powershell7 $ps7
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   native-contract:
     # Required fail-closed gate: official pinned binary, hash BEFORE any execution.
@@ -77,7 +84,15 @@ jobs:
           "NATIVE_CONTRACT_CLAUDE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Verify native version and flags in synthetic loopback and deny-proxy profile
         run: |
-          node -e "(async()=>{const f=await require('./test/native-contract-fixture').fixture();try{await f.verifyCompatibility();console.log('Native 2.1.263 compatibility verified; synthetic metadata only.')}finally{await f.close();}})().catch(()=>{console.error('Native compatibility prerequisite failed.');process.exitCode=1;});"
+          node test/ci-native-prerequisite.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Actual-native offline suites (no login, real credentials or live inference)
         run: npm.cmd run test:native
+      # A failed native prerequisite still prevents the native suites above.
+      # This diagnostic uses ONLY Node; it never substitutes for the native gate.
+      - name: Bounded post-suite supervisor timing (synthetic Node child only)
+        if: ${{ !cancelled() }}
+        run: |
+          $ps7 = (Get-Command pwsh -CommandType Application -ErrorAction Stop).Source
+          node test/ci-supervisor-probe.js --powershell7 $ps7
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

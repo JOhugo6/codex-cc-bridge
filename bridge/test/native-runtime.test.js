@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const runtime = require('../lib/native-runtime');
 const { synthetic, internals, nativeExecutable, SENTINEL } = require('./native-runtime-fixture');
+const { privateModule } = require('./diagnostic-fixture');
 const rejection = (...codes) => e => codes.includes(e.code) && !e.message.includes(SENTINEL);
 
 async function withFixture(fn, options) {
@@ -77,6 +78,61 @@ test('parent sanitation is case insensitive, immutable, private, and never resto
   const after = { ...f.parentEnv }; delete after.ORDINARY_COLOR;
   assert.deepEqual(after, before);
   assert.ok(!f.reads.some(p => /credentials|\.claude\.json/.test(p)));
+}));
+
+test('unit fixture canonicalizes owned roots without relaxing containment or native profile aliases', async () => withFixture(async owner => {
+  assert.equal(owner.root, await fs.realpath(owner.root));
+  const target = path.join(owner.root, 'temp-target'), alias = path.join(owner.root, 'temp-alias');
+  await fs.mkdir(target);
+  await fs.symlink(target, alias, 'junction');
+  const fixture = privateModule('native-runtime-fixture.js', '', { 'node:os': { tmpdir: () => alias } });
+  for (const defaultRoot of [true, false]) {
+    const f = await fixture.synthetic({ native: false, defaultRoot });
+    try {
+      assert.equal(f.base, null);
+      assert.equal(f.root, await fs.realpath(f.root));
+      assert.equal(path.dirname(f.root), target);
+      assert.equal(f.config, path.join(f.root, defaultRoot ? '.claude' : 'config'));
+      for (const p of [f.config, f.project, f.appdata, f.executable]) assert.equal(p, await fs.realpath(p));
+      for (const name of ['HOME', 'USERPROFILE']) assert.equal(f.parentEnv[name], f.root);
+      assert.equal(f.deps.ancestorBoundary, f.root);
+      const rejected = e => e.code === 'ERR_ASSERTION' && /non-synthetic filesystem access/.test(e.message);
+      const beforeStats = [...f.stats], beforeReads = [...f.reads];
+      // Neither sibling-prefix matches nor traversal may reach outside the owned root.
+      for (const outside of [f.root + '-outside/settings.json', path.join(f.root, '..', 'outside', 'settings.json')]) {
+        for (const method of ['stat', 'lstat', 'realpath', 'readdir', 'readFile']) await assert.rejects(f.deps.fs[method](outside), rejected);
+        for (const method of ['lstatSync', 'readdirSync']) assert.throws(() => f.deps.syncFs[method](outside), rejected);
+        await assert.rejects(f.json(outside, {}), rejected);
+        await assert.rejects(f.text(outside, 'never written'), rejected);
+      }
+      for (const file of [f.globalFile, path.join(f.config, '.credentials.json')]) {
+        await assert.rejects(f.deps.fs.readFile(file), /adapter must not read credential-bearing configuration/);
+      }
+      assert.deepEqual(f.stats, beforeStats); assert.deepEqual(f.reads, beforeReads);
+      const configAlias = path.join(f.root, 'config-alias');
+      await fs.symlink(f.config, configAlias, 'junction');
+      await assert.rejects(f.runtime({ configRoot: configAlias }).preflight({ cwd: f.project }), rejection('NATIVE_ROOT'));
+      assert.equal(f.calls.length, 0);
+      const settings = { permissions: { allow: ['Read'], deny: ['Bash(*)'] } };
+      await f.json(path.relative(f.root, path.join(f.config, 'settings.json')), settings);
+      await f.text('project/CLAUDE.md', 'Synthetic project context must remain unchanged.');
+      const parentBefore = { ...f.parentEnv };
+      const p = await f.runtime().preflight({ cwd: f.project });
+      assert.equal(p.identity.configRoot, f.config);
+      assert.equal(p.identity.home, f.root);
+      assert.equal(p.identity.configRootMode, defaultRoot ? 'default' : 'explicit');
+      assert.equal(p.identity.nativeConfigRoot, defaultRoot ? null : f.config);
+      await p.launch(l => {
+        assert.equal(l.cwd, f.project);
+        assert.equal(Object.hasOwn(l.env, 'CLAUDE_CONFIG_DIR'), !defaultRoot);
+        if (!defaultRoot) assert.equal(l.env.CLAUDE_CONFIG_DIR, f.config);
+      });
+      assert.deepEqual(f.parentEnv, parentBefore);
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.config, 'settings.json'), 'utf8')), settings);
+      assert.equal(await fs.readFile(path.join(f.project, 'CLAUDE.md'), 'utf8'), 'Synthetic project context must remain unchanged.');
+      assert.ok(!f.reads.some(p => /\.credentials\.json$|\.claude\.json$/.test(p)));
+    } finally { await f.close(); }
+  }
 }));
 
 test('default root preserves unset semantics; explicit same directory has a distinct identity', async () => withFixture(async f => {

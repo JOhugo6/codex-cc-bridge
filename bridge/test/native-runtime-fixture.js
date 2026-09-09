@@ -40,7 +40,9 @@ function emptyRegistry() {
 
 async function synthetic({ native = false, defaultRoot = false, tier = 'max' } = {}) {
   const base = native ? await fixture() : null;
-  const root = base?.root || await fs.mkdtemp(path.join(os.tmpdir(), 'native-runtime-unit-'));
+  // Canonicalize our new unit root before profile paths and containment checks.
+  // The native fixture owns and canonicalizes its own base root.
+  const root = base?.root || await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'native-runtime-unit-')));
   const config = path.join(root, defaultRoot ? '.claude' : 'config');
   const project = base?.project || path.join(root, 'project');
   const appdata = path.join(root, 'appdata');

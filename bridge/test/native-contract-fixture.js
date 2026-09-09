@@ -6,6 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { checkCompatibility } = require('./ci-native-compatibility');
+const { lines } = require('./ci-diagnostics');
 
 const MODEL = 'claude-opus-5';
 const SUPPORTED_VERSION = '2.1.263';
@@ -17,20 +19,10 @@ const EXE = process.env.NATIVE_CONTRACT_CLAUDE_EXE || path.join(os.homedir(), '.
 // This is only executable/flag compatibility, NOT the blocked routing contract.
 // Always run before the task-bearing process; never rely on a separate test's
 // selection, order or exit code. The unchecked launcher stays private to fixture.
-async function checkCompatibility(launch, options, supportedVersion, requiredFlags) {
-  const probeOptions = { ...options, input: '' };
-  const failure = stage => Object.assign(new Error(`Native CLI compatibility prerequisite failed (${stage}); no task launched.`), { code: 'NATIVE_CONTRACT_INCOMPATIBLE' });
-  const version = await launch(['--version'], probeOptions);
-  if (version.code !== 0 || version.timedOut || version.oversized || version.stdout.trim() !== `${supportedVersion} (Claude Code)`) throw failure('version');
-  const help = await launch(['--help'], probeOptions);
-  const flags = new Set(help.stdout.split(/\s+/));
-  if (help.code !== 0 || help.timedOut || help.oversized || !requiredFlags.every(flag => flags.has(flag))) throw failure('flags');
-  return { version: supportedVersion, flags: [...requiredFlags] };
-}
-
 async function fixture({ supportedVersion = SUPPORTED_VERSION, requiredFlags = REQUIRED_FLAGS } = {}) {
   const expectedFlags = [...requiredFlags];
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-contract-a1-'));
+  // Canonicalize only this newly owned root, before deriving any identity/env.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'native-contract-a1-')));
   const config = path.join(root, 'config');
   const project = path.join(root, 'project');
   await Promise.all([config, project, path.join(root, 'appdata'), path.join(root, 'localappdata')].map(p => fs.mkdir(p, { recursive: true })));
@@ -109,16 +101,22 @@ async function fixture({ supportedVersion = SUPPORTED_VERSION, requiredFlags = R
       const kill = () => { try { if (process.platform === 'win32') child.kill(); else process.kill(-child.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; } };
       children.add(kill);
       let stdout = '', stderr = '', timedOut = false, oversized = false;
+      // A PowerShell spawn is NOT evidence that the supervised child started.
+      let childStarted;
+      const observeStderr = lines(line => {
+        if (/^claude-bridge-child-pid:[1-9][0-9]{0,9}$/.test(line)) childStarted = true;
+      });
+      if (process.platform !== 'win32') child.once('spawn', () => { childStarted = true; });
       const timer = setTimeout(() => { timedOut = true; kill(); }, options.timeoutMs || 25000);
       child.stdout.on('data', b => {
         if (oversized) return;
         stdout += b;
         if (stdout.length > 2 * 1024 * 1024) { oversized = true; stdout = ''; kill(); }
       });
-      child.stderr.on('data', b => { stderr = (stderr + b).slice(-32000); });
+      child.stderr.on('data', b => { observeStderr(b); stderr = (stderr + b).slice(-32000); });
       child.stdin.on('error', e => { if (e.code !== 'EPIPE') kill(); });
       child.on('error', e => { clearTimeout(timer); children.delete(kill); reject(new Error(`Native executable unavailable (${e.code}); set NATIVE_CONTRACT_CLAUDE_EXE to an actual native executable.`)); });
-      child.on('close', code => { clearTimeout(timer); children.delete(kill); resolve({ code, stdout, stderr, timedOut, oversized }); });
+      child.on('close', code => { clearTimeout(timer); children.delete(kill); resolve({ code, stdout, stderr, timedOut, oversized, ...(childStarted === true ? { childStarted: true } : {}) }); });
       child.stdin.end(options.input);
     });
   }
@@ -135,8 +133,8 @@ async function fixture({ supportedVersion = SUPPORTED_VERSION, requiredFlags = R
       await fs.mkdir(path.dirname(target), { recursive: true });
       await fs.writeFile(target, data);
     },
-    verifyCompatibility() {
-      return checkCompatibility(launchNative, { env: { ...env } }, supportedVersion, expectedFlags);
+    verifyCompatibility(observe) {
+      return checkCompatibility(launchNative, { env: { ...env } }, supportedVersion, expectedFlags, observe);
     },
     async run(args, options = {}) {
       // Snapshot at entry, before awaiting the prerequisite. Supplying env means

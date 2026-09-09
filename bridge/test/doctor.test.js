@@ -67,6 +67,9 @@ test('doctor detects schema drift, not just public tool names', async t => {
 test('doctor preflight mirrors exact child-root semantics, sanitizes identity, never launches', async t => {
   for (const defaultRoot of [true, false]) {
     const f = await synthetic({ defaultRoot }); t.after(() => f.close());
+    assert.equal(f.root, fs.realpathSync.native(f.root));
+    assert.equal(f.config, path.join(f.root, defaultRoot ? '.claude' : 'config'));
+    assert.equal(f.config, fs.realpathSync.native(f.config));
     let seen;
     const native = { ...f.api, createNativeRuntime(options) { seen = options; return f.api.private.createRuntime(options, f.deps); } };
     const doctor = privateModule('../doctor.js', '', { './lib/native-runtime': native });
