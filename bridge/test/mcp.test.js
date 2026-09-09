@@ -8,7 +8,10 @@ const { setTimeouts } = require('../configure-timeout');
 
 test('stdio MCP handshake, tool schemas, status and input errors', async t => {
   const { settings } = await fixture(t);
-  const client = await connect(undefined, { CLAUDE_BRIDGE_STATE_DIR: settings.stateDir });
+  const client = await connect(undefined, {
+    CLAUDE_BRIDGE_STATE_DIR: settings.stateDir, CLAUDE_BRIDGE_COMMAND: 'nonexistent-native-executable',
+    CLAUDE_BRIDGE_CONFIG_DIR: 'nonexistent-native-profile', CLAUDE_BRIDGE_MODEL: 'invalid-default',
+  });
   t.after(() => client.close());
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map(t => t.name).sort(), ['claude_status', 'claude_turn']);
@@ -16,8 +19,11 @@ test('stdio MCP handshake, tool schemas, status and input errors', async t => {
   assert.deepEqual(status.structuredContent, { exists: false, conversation_id: 'unknown' });
   const invalid = await client.callTool({ name: 'claude_turn', arguments: { conversation_id: '../escape', message: 'x' } });
   assert.equal(invalid.isError, true);
-  const extra = await client.callTool({ name: 'claude_turn', arguments: { conversation_id: 'x', message: 'x', bypass: true } });
-  assert.equal(extra.isError, true);
+  for (const extra of [{ bypass: true }, { env: { ANTHROPIC_API_KEY: 'synthetic' } }, { provider: 'other' },
+    { auth: 'synthetic' }, { createRuntime: 'fakeRuntime' }, { configRoot: 'child-root' }, { command: 'other' }]) {
+    const response = await client.callTool({ name: 'claude_turn', arguments: { conversation_id: 'x', message: 'x', ...extra } });
+    assert.equal(response.isError, true);
+  }
 });
 
 test('timeout configuration preserves other servers and is idempotent', () => {

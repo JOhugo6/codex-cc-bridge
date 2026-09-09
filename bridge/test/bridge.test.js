@@ -3,8 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { ClaudeBridge } = require('../lib/bridge');
-const { fixture } = require('./helpers');
+const { fixture, TestBridge: ClaudeBridge } = require('./helpers');
 
 test('continuity survives a bridge restart; request replay does not invoke Claude twice', async t => {
   const { cwd, settings } = await fixture(t);
@@ -30,9 +29,9 @@ test('continuity survives a bridge restart; request replay does not invoke Claud
 test('working directory and model are pinned; different case IDs remain separate on Windows', async t => {
   const { cwd, settings, dir } = await fixture(t);
   const b = new ClaudeBridge({ run: async i => ({ reply: 'ok', session_id: i.sessionId }) }, settings);
-  const first = await b.turn({ conversation_id: 'Review', message: 'x', working_dir: cwd, model: 'test-model' });
+  const first = await b.turn({ conversation_id: 'Review', message: 'x', working_dir: cwd, model: 'opus' });
   await assert.rejects(b.turn({ conversation_id: 'Review', message: 'x', working_dir: dir }), { code: 'WORKING_DIR_MISMATCH' });
-  await assert.rejects(b.turn({ conversation_id: 'Review', message: 'x', model: 'another' }), { code: 'MODEL_MISMATCH' });
+  await assert.rejects(b.turn({ conversation_id: 'Review', message: 'x', model: 'claude-opus-5' }), { code: 'MODEL_MISMATCH' });
   const other = await b.turn({ conversation_id: 'review', message: 'x', working_dir: cwd });
   assert.notEqual(other.session_id, first.session_id);
 });

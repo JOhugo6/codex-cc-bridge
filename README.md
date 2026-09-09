@@ -2,140 +2,194 @@
 
 # codex-cc-bridge
 
-Volání **Claude Code CLI jako subagenta z Codexu**. Opačný směr k projektům
-`cc-codex-bridge` a `cc-copilot-bridge`: Codex deleguje přímo přes MCP nástroj,
-Claude má vlastní kontext a pracuje ve zvoleném adresáři projektu.
+Sdílený **externí Claude Code peer** pro Claude Code / Claudex a volitelně Codex.
+Skill `claude-peer` vysvětluje rodiči použití stdio MCP serveru `claude_bridge`
+s nástroji `claude_turn` a `claude_status`. Každá konverzace má vlastní trvalou
+nativní Claude session. Nejde o rodičovský nástroj **Agent**, `spawn_agent` ani
+Agent Teams; změna provideru rodiče nezmění jeho nativní agenty na Anthropic.
 
-```text
-Codex + skill claude-peer
-  └─ claude_bridge / claude_turn
-       └─ Node.js MCP server
-            └─ claude --print --output-format json
-                 ├─ první tah: --session-id <UUID>
-                 └─ další tahy: --resume <stejné UUID>
-```
+Cesta je rodič → skill/MCP nástroj → lokální Node server → hlídaný `claude.exe`
+→ uložené osobní first-party přihlášení. Text jde přes UTF-8 stdin, první tah
+použije `--session-id`, další `--resume`. V dítěti jsou vypnuté hooks a zděděné
+MCP servery; běžné projektové instrukce, settings a permissions zůstávají.
 
-Není potřeba Claude relay agent ani experimentální Agent Teams. MCP integrace
-vychází z [dokumentace Codexu](https://developers.openai.com/codex/mcp), spouštění
-CLI z [dokumentace Claude Code](https://code.claude.com/docs/en/headless).
+**Omezení vydání:** historická občasná odmítnutí `NATIVE_DRIFT` před spuštěním
+nemají prokázanou příčinu (reliability 47). Pozdější zelené běhy problém neuzavřely.
+Finální release vyžaduje výslovné rozhodnutí a nezávislou závěrečnou revizi/testy.
+Podrobnosti v [runbooku](docs/runbook.md#reliability-47).
 
-## Požadavky
+## Podporované prostředí
 
-- Windows, Node.js 20+, Windows PowerShell 5.1 nebo PowerShell 7.
-- Codex CLI v PATH; instalátor používá `codex mcp add`.
-- Nativní `claude.exe` v PATH, funkční přihlášení přes `claude auth login`.
-- Vývoj a lokální testy proběhly na Node 24.12.0, Codex CLI 0.153.4 a Claude Code 2.1.126.
+- Windows a Node.js **20+**; testovací matice **20.20.0 / 24.12.0**.
+- Instalátor: Windows PowerShell **5.1** nebo PowerShell **7**. Nativní supervisor
+  potřebuje Windows PowerShell 5.1. Úplné testy vyžadují **oba** shelly a C# compiler
+  z .NET Frameworku.
+- Skutečný nativní **Claude Code 2.1.263**, při instalaci `claude.exe` v PATH.
+  Jiná verze, shellové shimy a nativní inference mimo Windows nejsou podporované.
+- Existující **uložené osobní Pro/Max first-party claude.ai přihlášení** na daném PC.
+  Gateway, Team/Enterprise, neznámé typy účtů, API key a OAuth předané prostředím
+  nejsou podporované. Bridge adaptér credentials nečte ani nekopíruje.
+- Codex CLI jen pro registraci `-Target Codex` / `Both`. Pro `-Target Claude`
+  a `-SkipRegister` není potřeba.
 
-Windows je ověřovaná platforma. Backend obsahuje i POSIX větev, ale instalátor
-a garance úklidu odpojených procesů jsou určeny pro Windows.
+Metadata přihlášení nejsou důkaz platnosti tokenu nebo přístupu k Opusu. Testy ani
+výchozí doctor neprovádějí login, refresh, instalaci do skutečného user profilu
+nebo živý smoke.
 
-## Instalace
+## Instalace na každém PC
+
+Spusť pouze tehdy, chceš-li změnit user-scope registraci a skill na tomto PC.
+Instalátor stahuje uzamčené npm závislosti; před volbou oprávnění zkontroluj místní
+permission policy.
 
 ```powershell
 git clone https://github.com/JOhugo6/codex-cc-bridge.git
 cd codex-cc-bridge
-.\install.ps1
+.\install.ps1 -Target Claude
 ```
 
-Instalátor zkopíruje server do `~/.codex/bridges/claude-bridge`, spustí `npm ci`,
-ověří MCP handshake bez modelového volání, přidá skill do `~/.agents/skills/claude-peer`
-a zaregistruje server `claude_bridge` v konfiguraci Codexu. Před úpravou existujícího
-`config.toml` vytvoří zálohu. Respektuje `CODEX_HOME`; cíle lze změnit parametry
-`-CodexRoot` a `-SkillRoot`. Původní bridge pro Claude Code se neupravují.
+Vznikne **jedna sdílená rodičovská registrace** `claude_bridge` přes nativní
+`claude mcp add-json ... --scope user`. Claude/Claudex ji objevují v `.claude.json`,
+**nikoli** v `settings.json`; musí používat stejný rodičovský config/discovery root.
+Skill je v `~/.claude/skills/claude-peer`, případně v rodičovském
+`CLAUDE_CONFIG_DIR/skills`. `-ClaudeSkillRoot` určuje jiný společný skill adresář.
+Restartuj rodiče a požádej ho o použití **claude-peer** pro ohraničený úkol. Pokud
+nástroj chybí, nenahrazuj jej rekurzivním spuštěním bridge/shellu.
 
-Potom **restartuj Codex** a zadej například:
-
-```text
-$claude-peer Pošli Claude úkol zkontrolovat autentizaci v aktuálním projektu.
-Chci konkrétní chyby s odkazy na soubory, bez úprav kódu.
-```
-
-Nebo: „Použij Claude jako subagenta pro návrh testů tohoto modulu.“ Skill
-vysvětluje Codexu nástroj, zachování kontextu a zpracování přerušených tahů.
-Jde o externího subagenta přes MCP, nikoli nativní roli nástroje `spawn_agent`.
-
-## Oprávnění a úpravy kódu
-
-Výchozí režim je `dontAsk`: Claude nečeká na interaktivní potvrzení a nepovolené
-operace odmítne. Stále platí existující Claude permission rules; nejde o sandbox
-ani záruku pouze čtení. Zamítnuté nástroje jsou vráceny v `permission_denials`.
-
-Pro práci na implementaci můžeš při instalaci povolit editace a konkrétní příkazy:
+Kompatibilní výchozí cíl zůstává `-Target Codex`. `-Target Both` přidá také Codex
+registraci a totožný skill v `~/.agents/skills/claude-peer` (změna přes `-SkillRoot`).
+Shodné cílové cesty skillů se deduplikují. Server i pro Claude-only zůstává v
+`~/.codex/bridges/claude-bridge`, stav v `~/.codex/state/claude-bridge`;
+`CODEX_HOME` / `-CodexRoot` mění společný základ.
 
 ```powershell
-.\install.ps1 -PermissionMode acceptEdits -AllowedTools 'Bash(npm test)'
+# Volitelný existující absolutní NFC profil dítěte; zachovej přesné znění cesty.
+.\install.ps1 -Target Claude -NativeConfigRoot 'D:/Native Claude Profile'
+# Volitelný Codex a výslovně přidaná oprávnění pro implementaci:
+.\install.ps1 -Target Both -PermissionMode acceptEdits -AllowedTools 'Bash(npm test)'
 ```
 
-Model se ve výchozím nastavení přebírá z Claude CLI. Volitelně lze použít
-`-Model sonnet` nebo zadat `model` v prvním volání nástroje.
-Oprávnění nastavená bridgem, model a adresář jsou uložené při vzniku konverzace;
-nové nastavení instalátoru platí pro **nové conversation ID**. Claude settings
-a jejich vlastní permission rules se dál načítají při každém spuštění.
+Bez `-NativeConfigRoot` dítě používá standardní `~/.claude`, **nikoli rodičovské
+`CLAUDE_CONFIG_DIR`**. Explicitní profil se uloží do `CLAUDE_BRIDGE_CONFIG_DIR`;
+přijatý řetězec cesty a auth namespace se zachovají přesně. Ne-NFC filesystem
+profil nebo nepodporovaná nepřímá cesta se odmítne. Mezi PC nepřenášej credentials,
+nativní sessions ani absolutní MCP registraci; instaluj a přihlašuj se samostatně.
 
-Pro podřízené Claude jsou vypnuté hooks a načítání MCP serverů (`--strict-mcp-config`
-s prázdnou konfigurací), aby se nespouštěly uživatelské hooky a další bridge.
-Claude dál načítá projektový kontext a `CLAUDE.md`. Zadání jde jako UTF-8 přes
-stdin, bez vložení textu do příkazové řádky nebo shellu.
+`-SkipRegister` stále kopíruje server/skills, spouští npm a neinferenční doctor;
+**není to dry run**. Aktualizace chrání spravované soubory/registrace a ponechává
+úzké zálohy. Kolize odmítne. Neúplný rollback zachová souběžné zápisy a recovery
+zálohu; neobnovuj celý starý config přes aktuální data.
 
-## Přímé MCP volání
+## Model, oprávnění a kontinuita
+
+Veřejné **`opus` → `claude-opus-5[1m]`**, strukturované/wire základní ID je
+`claude-opus-5`. Zmrazený katalog obsahuje jen `opus`, `opus[1m]`, `claude-opus-5`,
+`claude-opus-5[1m]`. Explicitní `model` nástroje má u nové konverzace přednost před
+`CLAUDE_BRIDGE_MODEL`. Žádné převzetí rodičovského aliasu, automatický fallback
+provideru/modelu nebo tichá náhradní session.
+
+Stav v2 připíná kanonický model, runtime/account/executable identitu, přesný výběr
+profilu, pracovní adresář a bridge permission/tool policy. Nový default nepřepíše
+existující konverzaci. **Stav v1 dovoluje jen status a přesný replay dokončeného
+requestu**; nový tah vrátí `LEGACY_SESSION`. Automatická migrace není.
+
+Serverová volba `CLAUDE_BRIDGE_DISABLE_TOOLS=1` odstraní implementace nástrojů
+pomocí doslova prázdného argumentu nativního `--tools`. Přijímá pouze `0` a `1`;
+bez nastavení / s `0` zůstávají běžné nástroje. Není to nový MCP vstup ani možnost
+předat libovolné CLI přepínače. Nová v2 připne boolean `policy.disableTools` přes
+restarty i změny konfigurace oběma směry. Stará v2 bez pole ponechá historické
+běžné nástroje, bez migrace; zapnutí volby existující konverzaci nezmění.
+Pro vědomě jinou policy založ nové conversation ID.
+
+`dontAsk` odmítne operace vyžadující potvrzení, místo aby čekal. Existující allow
+pravidla dál platí: **`allowedTools=[]` nevypíná nástroje** a `dontAsk` ani text
+„neupravuj soubory“ nejsou záruka read-only práce. Kontroluj `permission_denials`;
+zamítnutí neobcházej zvýšením oprávnění nebo jiným nástrojem. `-AllowedTools`
+přijímá permission pravidla, ne CLI přepínače. Konfliktní managed routing se
+odmítá, nikoli přepisuje. Izolace routingu dítěte **není OS sandbox** ani atomický
+globální zámek policy po odeslání úlohy.
 
 ```json
 {
-  "conversation_id": "my-project-review-01",
+  "conversation_id": "project-review-01",
   "request_id": "turn-01",
-  "working_dir": "C:/vyvoj/my-project",
-  "message": "Zkontroluj implementaci autentizace. Vrať nálezy s cestami a řádky."
+  "working_dir": "C:/Projects/My App",
+  "message": "Zkontroluj autentizaci. Vrať konkrétní nálezy; neupravuj soubory."
 }
 ```
 
-Další zpráva použije stejné `conversation_id`, nové `request_id` a může vynechat
-adresář. Změna adresáře nebo explicitního modelu v téže konverzaci je chyba.
-ID rozlišují velikost písmen i na Windows; stavové soubory používají SHA-256 názvy.
-Konverzační klíče jsou společné pro celý stavový adresář, proto do nich zahrň projekt.
+Zachovej conversation ID, pro další zprávu dej nové request ID. Stejné dokončené
+request ID se stejnou zprávou vrátí přesný cached výsledek (kromě `replayed: true`)
+bez nativního preflightu či inference. Výsledek obsahuje `reply`, `session_id`,
+`turn`, `model`, `runtime`, `model_evidence`, usage/cost a denials. Prázdné
+`model_evidence` model nedokládá; sebepopis modelu není důkaz.
 
-Výsledek obsahuje `reply`, `session_id`, `turn`, `working_dir`, `replayed`,
-`permission_denials`, `usage` a `total_cost_usd`. Text odpovědi je zachovaný
-v poli `reply` strukturovaného MCP výsledku i v JSON textového bloku.
-`claude_status({conversation_id})` vrátí stav a poslední dokončený výsledek bez volání modelu.
+Preflight je **před** uložením `pending`; finální recheck bezprostředně před
+hlídaným spawnem. Prokazatelně předspouštěcí odmítnutí obnoví předchozí `ready`
+snapshot (při selhání obnovy zůstane konzervativní `pending`). Selhání po submission
+callbacku je `uncertain`. Použij `claude_status`, automaticky neopakuj úlohu,
+nemaž stav a nezakládej náhradní konverzaci. Bridge stav i lokální nativní
+transcripty jsou nutné pro kontinuitu a mohou obsahovat citlivá zadání/výsledky.
+Timeout je 900 s, Codex má 60 s navíc; Windows Job supervisor zajišťuje úklid
+podřízeného procesu a potomků při timeoutu/odpojení.
 
-`request_id` je volitelný, ale doporučený: stejné ID a stejná zpráva po dokončení
-vrátí uložený výsledek, bez dalšího volání Claude. Jiné tělo se stejným ID je chyba.
-Bez request ID každý úspěšný požadavek znamená nový tah.
-
-## Stav a chyby
-
-Bridge ukládá UUID, adresář, konfiguraci a výsledky do
-`~/.codex/state/claude-bridge/<sha256>.json`. Claude ukládá vlastní historii
-do svého standardního úložiště. Pro kontinuitu jsou potřeba **obě úložiště**.
-
-- Při chybě obnovy se nikdy automaticky nezaloží nová session.
-- Před spuštěním je na disk uložen stav `pending`. Po úspěchu přejde do `ready`;
-  při chybě do `uncertain`. Přerušené tahy se automaticky neopakují.
-- Souběžný požadavek na stejnou konverzaci dostane `CONVERSATION_BUSY`.
-- Na Windows běží Claude v Job Objectu. Timeout, zrušení i smrt MCP serveru
-  ukončí podřízený proces a jeho potomky.
-- Timeout CLI je 900 sekund; instalátor nastaví MCP timeout o 60 sekund delší.
-
-Obnova po chybě, proměnné prostředí a odinstalace: [provozní příručka](docs/runbook.md).
-
-## Testy
+## Diagnostika a testy
 
 ```powershell
-npm.cmd --prefix bridge ci
-npm.cmd --prefix bridge test
+npm.cmd --prefix bridge ci --ignore-scripts --no-audit --no-fund
 npm.cmd --prefix bridge run doctor
-
-# Dvě skutečná modelová volání, oddělené procesy MCP a ověření paměti:
-$env:CLAUDE_BRIDGE_LIVE = '1'
-npm.cmd --prefix bridge run smoke
+# Výslovný metadata/preflight, nikoli inference; možný kontakt ancillary služeb:
+npm.cmd --prefix bridge run doctor -- --native --cwd 'C:/Projects/My App' --model opus
+# Skutečný pinovaný executable; testy pouze syntetické profily + loopback/deny proxy:
+$env:NATIVE_CONTRACT_CLAUDE_EXE = (Get-Command claude.exe -CommandType Application | Select-Object -First 1).Source
+npm.cmd --prefix bridge test
 ```
 
-Automatické testy bez modelu pokrývají subprocess komunikaci, vícekolový kontext,
-MCP restart, opakované požadavky, pracovní adresář, korupci stavu, timeout,
-zrušení, zamítnuté operace a Windows process tree. Živý test používá dočasný
-pracovní adresář; vlastní Claude transcript zůstává ve standardním Claude úložišti.
+Výchozí doctor ověřuje handshake a očekávaná **veřejná schémata nástrojů** s
+omezeným čekáním; nespouští nativní CLI/auth/model. `--native` používá zmrazenou
+runtime validaci a vypisuje sanitizovaná metadata kompatibility/profilu, nikoli
+certifikaci tokenu/entitlementu. Nevypisuje raw auth JSON ani prostředí.
 
-## Licence
+`npm test` explicitně zahrnuje všechny udržované offline suites včetně nativní
+charakterizace/integrace a instalátoru, bez shell globů a živého smoke.
+`test:unit`, `test:native`, `test:installer` jsou dílčí skupiny. Chybějící native/
+Windows/PowerShell předpoklady znamenají selhání, nikoli úspěšné přeskočení.
+Syntetický transport není live entitlement důkaz ani OS sandbox. Soubory suites
+běží sekvenčně; záměrné souběžné scénáře zůstávají uvnitř testů.
 
-Apache-2.0. Windows Job Object supervisor je převzatý a upravený z
-`cc-codex-bridge`; původ a změny jsou uvedené v [NOTICE](NOTICE).
+**Historický Node20 installer blocker:** dřívější fixture vytvořila hardlink
+běžícího Node 20.20.0 a úklid selhal s `EPERM`; tento aggregate nebyl PASS. Opravu
+a nezávislé kontroly vlastní balík B4. Dokud ji nepotvrdí závěrečný aggregate
+aktuálních zdrojů, non-installer testy C2 nejsou plná Node20 kompatibilita.
+Jde o jiný problém než neuzavřená reliability 47.
+
+CI má Windows Node20/24 jobs a skutečný pinovaný native provisioning. Pomocník
+`bridge/ci/provision-native.js` stáhne oficiální Windows x64 **2.1.263**, ověří
+pevnou velikost/SHA256 před zpřístupněním executable a CI následně ověří verzi/flags
+v disposable syntetickém profilu. Jen HTTPS, bez redirectů, latest, binárky z
+repository variables nebo loginu. PR používá pomocník z **důvěryhodného base
+commitu**, nikoli fork/head kód; pomocník musí nejprve existovat na base větvi.
+Chybějící artefakt/síť/base helper gate odmítne, nejde o úspěšný skip.
+[Provenience, checksum a setup](docs/runbook.md#native-ci-provisioning).
+Lokální testy nebo vytvoření workflow neznamenají spuštění hosted CI.
+
+`npm.cmd --prefix bridge run smoke -- --live` (nebo `CLAUDE_BRIDGE_LIVE=1`) je
+použitelný živý check se **zvláštním opt-in**, není součást offline testů ani CI.
+Bez opt-in vrátí `SMOKE_OPT_IN_REQUIRED` před vytvářením souborů a spuštěním MCP.
+Se souhlasem vynutí vypnutí nástrojů, výchozí Opus, `dontAsk`, prázdná allow pravidla
+a malý dočasný cwd mimo repo. Odešle dvě syntetické zprávy přes restart MCP procesu,
+ověří přesný cached replay, stabilní v2 session/runtime identitu a neprázdná
+strukturovaná modelová metadata, nikoli sebepopis.
+
+**Spotřebuje skutečné usage, může stát peníze a ponechá native transcripty ve
+zvoleném existujícím profilu. Globální native instrukce mohou stále platit.**
+Script neprovádí login, refresh, retry ani fallback. Úspěch uklidí jen jeho vlastní
+cwd/bridge stav; chyba tento adresář zachová pro kontrolu. Nikdy nemaže nativní
+profil/transcript. Offline actual-native kontroly vypnutých i běžných nástrojů
+nejsou live entitlement důkaz. Živá cesta při této implementaci nebyla spuštěna;
+před spuštěním je nutný samostatný souhlas.
+
+[Provozní příručka](docs/runbook.md). Reference:
+[Codex MCP](https://developers.openai.com/codex/mcp),
+[Claude programmatic usage](https://code.claude.com/docs/en/headless).
+Apache-2.0; původ Windows supervisoru uvádí [NOTICE](NOTICE).

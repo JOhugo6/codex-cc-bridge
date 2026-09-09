@@ -1,71 +1,59 @@
 [CmdletBinding()]
 param(
+    [ValidateSet('Codex', 'Claude', 'Both')][string]$Target = 'Codex',
     [string]$CodexRoot = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }),
     [string]$SkillRoot = $(Join-Path $env:USERPROFILE '.agents\skills'),
+    [string]$ClaudeSkillRoot = '',
+    [string]$NativeConfigRoot = '',
     [ValidateSet('dontAsk', 'acceptEdits', 'plan', 'default', 'auto')]
     [string]$PermissionMode = 'dontAsk',
     [string[]]$AllowedTools = @(),
-    [string]$Model = '',
+    [string]$Model = 'opus',
     [ValidateRange(10, 86400)][int]$TimeoutSeconds = 900,
     [switch]$SkipRegister
 )
 $ErrorActionPreference = 'Stop'
-$nodeExe = (Get-Command node -ErrorAction Stop).Source
-$npmCommand = (Get-Command npm.cmd -ErrorAction Stop).Source
-$claudeExe = (Get-Command claude.exe -ErrorAction Stop).Source
-$codexCommand = (Get-Command codex -ErrorAction Stop).Source
-$major = [int]((& $nodeExe --version).TrimStart('v').Split('.')[0])
-if ($major -lt 20) { throw 'Node.js 20 or newer is required.' }
-
-$root = [IO.Path]::GetFullPath($CodexRoot)
-$destination = Join-Path $root 'bridges\claude-bridge'
-$source = Join-Path $PSScriptRoot 'bridge'
-if ([IO.Path]::GetFullPath($source) -eq [IO.Path]::GetFullPath($destination)) { throw 'Install destination must differ from the source directory.' }
-New-Item -ItemType Directory -Path $destination -Force | Out-Null
-# Copy only maintained source; keep persisted state outside the installation.
-foreach ($item in Get-ChildItem -LiteralPath $source -Force) {
-    if ($item.Name -in @('node_modules', '.test-output')) { continue }
-    Copy-Item -LiteralPath $item.FullName -Destination $destination -Recurse -Force
-}
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'LICENSE') -Destination $destination -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NOTICE') -Destination $destination -Force
-& $npmCommand --prefix $destination ci --no-audit --no-fund
-if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
-& $nodeExe (Join-Path $destination 'doctor.js')
-if ($LASTEXITCODE -ne 0) { throw 'MCP handshake failed; configuration was not changed.' }
-
-$skillDestination = Join-Path ([IO.Path]::GetFullPath($SkillRoot)) 'claude-peer'
-New-Item -ItemType Directory -Path $skillDestination -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'skills\claude-peer\SKILL.md') -Destination $skillDestination -Force
-
-if (-not $SkipRegister) {
-    $configFile = Join-Path $root 'config.toml'
-    if (Test-Path -LiteralPath $configFile) {
-        $backup = $configFile + '.claude-bridge-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfff') + '.bak'
-        Copy-Item -LiteralPath $configFile -Destination $backup
-        Write-Host "Configuration backup: $backup"
+# Reject argv-shaped tool entries before discovering/running any installer CLI.
+# Flags inside a permission rule such as Bash(git log --oneline:*) are data.
+foreach ($tool in $AllowedTools) {
+    if ([string]::IsNullOrWhiteSpace($tool) -or $tool.TrimStart().StartsWith('-') -or $tool -match '[\x00-\x1f\x7f]') {
+        throw 'INSTALL_INVALID_OPTIONS'
     }
-    $savedCodexRoot = $env:CODEX_HOME
-    try {
-        $env:CODEX_HOME = $root
-        $allowJson = ConvertTo-Json -InputObject @($AllowedTools) -Compress
-        $arguments = @('mcp', 'add', 'claude_bridge',
-            '--env', "CLAUDE_BRIDGE_COMMAND=$claudeExe",
-            '--env', "CLAUDE_BRIDGE_STATE_DIR=$(Join-Path $root 'state\claude-bridge')",
-            '--env', "CLAUDE_BRIDGE_PERMISSION_MODE=$PermissionMode",
-            '--env', "CLAUDE_BRIDGE_ALLOWED_TOOLS=$allowJson",
-            '--env', "CLAUDE_BRIDGE_TIMEOUT_MS=$($TimeoutSeconds * 1000)")
-        if ($Model) { $arguments += @('--env', "CLAUDE_BRIDGE_MODEL=$Model") }
-        $arguments += @('--', $nodeExe, (Join-Path $destination 'index.js'))
-        & $codexCommand @arguments
-        if ($LASTEXITCODE -ne 0) { throw 'codex mcp add failed.' }
-        & $nodeExe (Join-Path $destination 'configure-timeout.js') $configFile ($TimeoutSeconds + 60)
-        if ($LASTEXITCODE -ne 0) { throw 'Could not configure MCP timeout.' }
-        & $codexCommand mcp get claude_bridge
-        if ($LASTEXITCODE -ne 0) { throw 'Registered MCP configuration could not be read.' }
-    } finally { $env:CODEX_HOME = $savedCodexRoot }
 }
-Write-Host "Installed bridge: $destination"
-Write-Host "Installed skill: $skillDestination"
-Write-Host "Claude permission mode: $PermissionMode"
-Write-Host 'Restart Codex and use $claude-peer to delegate a task.'
+# Resolve machine-local programs, not paths copied from another PC. In particular,
+# neither Claude-only nor an unregistered installation needs the Codex CLI.
+# Extension-qualified discovery can return several applications. Pin the first
+# PATH match before extracting Source, keeping a single literal executable path.
+$nodeExe = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$npmCommand = (Get-Command npm.cmd -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$claudeExe = (Get-Command claude.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$codexCommand = $null
+if (-not $SkipRegister -and $Target -in @('Codex', 'Both')) {
+    $codexCommand = (Get-Command codex -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+}
+$major = [int]((& $nodeExe --version).TrimStart('v').Split('.')[0])
+if ($LASTEXITCODE -ne 0 -or $major -lt 20) { throw 'Node.js 20 or newer is required.' }
+
+# Base64 UTF-8 JSON travels over stdin: PowerShell 5.1 and 7 differ in
+# native argv quoting and pipeline encoding (including nested script scopes).
+# No environment variables (including CODEX_HOME / CLAUDE_CONFIG_DIR) are changed
+# in this process. The helper gives only the Codex subprocess its selected root.
+$options = @{
+    target = $Target; codexRoot = $CodexRoot; skillRoot = $SkillRoot
+    permissionMode = $PermissionMode; allowedTools = @($AllowedTools)
+    model = $Model; timeoutSeconds = $TimeoutSeconds; skipRegister = [bool]$SkipRegister
+    nodeExe = $nodeExe; npmCommand = $npmCommand; claudeExe = $claudeExe
+    codexCommand = $codexCommand; sourceRoot = $PSScriptRoot
+    cwd = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath('.')
+}
+if ($PSBoundParameters.ContainsKey('NativeConfigRoot')) { $options.nativeConfigRoot = $NativeConfigRoot }
+if ($ClaudeSkillRoot) { $options.claudeSkillRoot = $ClaudeSkillRoot }
+$savedOutputEncoding = $OutputEncoding
+try {
+    $OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $json = $options | ConvertTo-Json -Depth 10 -Compress
+    [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)) | & $nodeExe (Join-Path $PSScriptRoot 'bridge\install-config.js')
+    if ($LASTEXITCODE -ne 0) { throw 'Bridge installation failed; see the sanitized diagnostic above.' }
+} finally {
+    $OutputEncoding = $savedOutputEncoding
+}

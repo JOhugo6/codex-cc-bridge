@@ -3,15 +3,15 @@
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { z } = require('zod');
-const { config } = require('./lib/config');
+const { config, safeError } = require('./lib/config');
 const { ClaudeBackend } = require('./lib/claude-backend');
 const { ClaudeBridge } = require('./lib/bridge');
 
-async function main(createBackend = settings => new ClaudeBackend(settings)) {
+async function main(createBackend = settings => new ClaudeBackend(settings), createRuntime) {
   if (process.env.CLAUDE_BRIDGE_CHILD) throw new Error('Recursive Claude bridge invocation is disabled.');
   const settings = config();
   const backend = createBackend(settings);
-  const bridge = new ClaudeBridge(backend, settings);
+  const bridge = new ClaudeBridge(backend, settings, createRuntime);
   const server = new McpServer({ name: 'claude-bridge', version: '1.0.0' }, {
     instructions: 'Use claude_turn to delegate a bounded task to Claude Code CLI. Keep conversation_id stable for follow-ups. Supply an absolute working_dir for a new conversation. Claude has its own persistent context; send the task and relevant context explicitly. Inspect permission_denials. Use claude_status after an interrupted call; never automatically start a replacement conversation.',
   });
@@ -21,6 +21,7 @@ async function main(createBackend = settings => new ClaudeBackend(settings)) {
       const output = await fn(input, extra);
       return { structuredContent: output, content: [{ type: 'text', text: JSON.stringify(output) }] };
     } catch (err) {
+      err = safeError(err);
       return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: err.code || 'BRIDGE_ERROR', message: err.message }) }] };
     }
   };
@@ -30,7 +31,7 @@ async function main(createBackend = settings => new ClaudeBackend(settings)) {
     inputSchema: z.object({
       conversation_id: id, message: z.string().min(1).max(100000),
       working_dir: z.string().min(1).max(4096).optional(), request_id: id.optional(),
-      model: z.string().min(1).max(200).optional().describe('Optional Claude model alias or ID, fixed at session creation. Omit to use the configured Claude model.'),
+      model: z.string().min(1).max(200).optional().describe('Optional verified native model alias or ID, fixed at session creation. Defaults to Opus (or CLAUDE_BRIDGE_MODEL); existing sessions retain their pinned model.'),
     }).strict(),
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   }, wrap((input, extra) => bridge.turn(input, extra.signal)));

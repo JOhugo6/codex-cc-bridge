@@ -1,60 +1,76 @@
 'use strict';
 const { spawn } = require('node:child_process');
 const path = require('node:path');
-const { fail } = require('./config');
+const { fail, validateAllowedTools } = require('./config');
 
-function parseResult(stdout, expectedId) {
+function parseResult(stdout, expectedId, expectedModel) {
   let result;
   try {
     const parsed = JSON.parse(stdout);
-    const results = Array.isArray(parsed) ? parsed.filter(r => r.type === 'result') : [parsed];
-    if (results.length !== 1 || results[0]?.type !== 'result') throw new Error('Expected one result event');
+    const results = Array.isArray(parsed) ? parsed.filter(r => r?.type === 'result') : [parsed];
+    if (results.length !== 1 || results[0]?.type !== 'result') throw new Error();
     result = results[0];
-  } catch (err) { throw fail('INVALID_RESULT', `Claude returned invalid JSON: ${err.message}`); }
+  } catch { throw fail('INVALID_RESULT', 'Claude returned invalid JSON or multiple result events.'); }
   if (result.is_error || result.subtype !== 'success') {
-    if (result.api_error_status === 401) throw fail('CLAUDE_AUTH_FAILED', 'Claude authentication failed. Run claude auth login, then retry with a new conversation_id after inspecting the failed session.');
-    throw fail('CLAUDE_RESULT_ERROR', JSON.stringify({ subtype: result.subtype, errors: result.errors, result: result.result }));
+    if (result.api_error_status === 401) throw fail('CLAUDE_AUTH_FAILED', 'Native Claude authentication failed.');
+    throw fail('CLAUDE_RESULT_ERROR', 'Native Claude returned an unsuccessful result. No fallback was attempted.');
   }
-  if (result.session_id !== expectedId) throw fail('SESSION_ID_DRIFT', `Expected session ${expectedId}, received ${result.session_id}.`);
+  if (result.session_id !== expectedId) throw fail('SESSION_ID_DRIFT', 'Claude returned a different session identity.');
   if (typeof result.result !== 'string') throw fail('INVALID_RESULT', 'Claude result is missing its text.');
+  // [1m] is a context selector: native usage may retain it while wire metadata
+  // uses the base ID. Missing usage is not proof of identity; ignore self-description.
+  if (result.modelUsage !== undefined && (!result.modelUsage || typeof result.modelUsage !== 'object' || Array.isArray(result.modelUsage))) {
+    throw fail('INVALID_RESULT', 'Claude returned malformed structured model usage.');
+  }
+  const observed = Object.keys(result.modelUsage || {});
+  if (expectedModel !== undefined && observed.some(model => model !== expectedModel && model !== expectedModel.replace(/\[1m\]$/, ''))) {
+    throw fail('MODEL_DRIFT', 'Structured usage reports a model other than the pinned model.');
+  }
+  const numeric = value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter(([k, v]) => /^[a-z_]+$/.test(k) && typeof v === 'number' && Number.isFinite(v) && v >= 0));
+  };
   return {
     reply: result.result, session_id: result.session_id,
     permission_denials: Array.isArray(result.permission_denials) ? result.permission_denials : [],
-    usage: result.usage || {}, total_cost_usd: result.total_cost_usd ?? null,
+    usage: numeric(result.usage),
+    total_cost_usd: typeof result.total_cost_usd === 'number' && Number.isFinite(result.total_cost_usd) && result.total_cost_usd >= 0 ? result.total_cost_usd : null,
+    model_evidence: expectedModel === undefined ? [] : observed,
   };
 }
 
 class ClaudeBackend {
   constructor(settings) { this.settings = settings; this.active = new Set(); this.closed = false; }
-  async run({ sessionId, resume, message, cwd, model, permissionMode, allowedTools, signal }) {
+  run({ launch, sessionId, resume, message, cwd, model, permissionMode, allowedTools, disableTools = false, signal }) {
     if (this.closed || signal?.aborted) throw fail('CANCELLED', 'Claude call cancelled.');
-    const args = [
+    if (!launch || launch.shell !== false || launch.cwd !== cwd || !Array.isArray(launch.args) || !launch.env) throw fail('INVALID_CONFIG', 'A prepared native launch is required.');
+    // Validate and snapshot again at the direct backend boundary, before spawn.
+    const toolRules = validateAllowedTools(allowedTools);
+    if (typeof disableTools !== 'boolean') throw fail('INVALID_CONFIG', 'Tool-disable policy must be boolean.');
+    // No environment inheritance and no duplicate model/settings/MCP guard options.
+    const env = launch.env;
+    let command = launch.command;
+    let commandArgs = [...launch.args,
       '--print', '--output-format', 'json', '--input-format', 'text',
-      resume ? '--resume' : '--session-id', sessionId,
-      '--permission-mode', permissionMode,
-      '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-      '--settings', '{"disableAllHooks":true}',
+      resume ? '--resume' : '--session-id', sessionId, '--permission-mode', permissionMode,
     ];
-    if (model) args.push('--model', model);
-    if (allowedTools.length) args.push('--allowedTools', ...allowedTools);
-    const env = { ...process.env, CLAUDE_BRIDGE_CHILD: '1' };
-    delete env.CLAUDECODE;
-    if (env.CLAUDE_CODE_SKIP_PROMPT_HISTORY) throw fail('INVALID_CONFIG', 'Unset CLAUDE_CODE_SKIP_PROMPT_HISTORY: bridge sessions require persistence.');
-    let command = this.settings.command;
-    let commandArgs = [...(this.settings.prefixArgs || []), ...args];
-    if (/\.(cmd|bat|ps1)$/i.test(command)) throw fail('INVALID_CONFIG', 'Use the native claude executable, not a shell shim. Set CLAUDE_BRIDGE_COMMAND to claude.exe.');
+    // A literal empty argument removes tool implementations, not permissions.
+    // Verified on pinned 2.1.263 through the unchanged Windows Job supervisor.
+    if (disableTools) commandArgs.push('--tools', '');
+    if (toolRules.length) commandArgs.push('--allowedTools', ...toolRules);
+    if (/\.(cmd|bat|ps1)$/i.test(command)) throw fail('INVALID_CONFIG', 'A native executable, not a shell shim, is required.');
     if (process.platform === 'win32') {
       const launch = Buffer.from(JSON.stringify({ command, args: commandArgs, cwd, parentPid: process.pid })).toString('base64');
-      command = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      command = path.join(Object.entries(env).find(([key]) => key.toUpperCase() === 'SYSTEMROOT')?.[1] || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
       commandArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'windows-job-runner.ps1'), '-LaunchBase64', launch];
     }
     return new Promise((resolve, reject) => {
       const child = spawn(command, commandArgs, { cwd, env, shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
-      let stdout = [], stderr = '', size = 0, error = null;
+      let stdout = [], size = 0, error = null;
       const stop = () => {
         if (!child.pid) return;
         try { if (process.platform === 'win32') child.kill(); else process.kill(-child.pid, 'SIGKILL'); }
-        catch (err) { if (err.code !== 'ESRCH') process.stderr.write(`Claude shutdown: ${err.message}\n`); }
+        catch { /* Process may already have exited; never log raw OS diagnostics. */ }
       };
       const abort = () => { error ||= fail('CANCELLED', 'Claude call cancelled; inspect session before retrying.'); stop(); };
       this.active.add(abort);
@@ -66,25 +82,24 @@ class ClaudeBackend {
         if (size > 16 * 1024 * 1024) { error ||= fail('OUTPUT_TOO_LARGE', 'Claude output exceeded 16 MiB.'); stop(); }
         else stdout.push(chunk);
       });
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16000); });
-      child.on('error', err => { error ||= fail('CLAUDE_SPAWN_FAILED', err.message); });
-      child.stdin.on('error', err => { if (err.code !== 'EPIPE') { error ||= err; stop(); } });
+      // Drain stderr, but never retain or forward possible auth/provider diagnostics.
+      child.stderr.resume();
+      child.on('error', err => { error ||= fail('CLAUDE_SPAWN_FAILED', 'Could not start the supervised native executable.'); });
+      child.stdin.on('error', err => { if (err.code !== 'EPIPE') { error ||= fail('CLAUDE_SPAWN_FAILED', 'Could not deliver native stdin.'); stop(); } });
       child.on('close', (code, exitSignal) => {
         clearTimeout(timer);
         signal?.removeEventListener('abort', abort);
         this.active.delete(abort);
         if (error) return reject(error);
         if (code !== 0) {
-          const diagnostics = stderr.replace(/^claude-bridge-child-pid:\d+\r?\n/gm, '').trim();
-          const response = Buffer.concat(stdout).toString('utf8').slice(-16000).trim();
-          try { parseResult(response, sessionId); }
+          const response = Buffer.concat(stdout).toString('utf8');
+          try { parseResult(response, sessionId, model); }
           catch (err) {
-            if (['CLAUDE_AUTH_FAILED', 'CLAUDE_RESULT_ERROR', 'SESSION_ID_DRIFT'].includes(err.code)) return reject(err);
+            if (['CLAUDE_AUTH_FAILED', 'CLAUDE_RESULT_ERROR', 'SESSION_ID_DRIFT', 'MODEL_DRIFT'].includes(err.code)) return reject(err);
           }
-          return reject(fail('CLAUDE_EXIT', `Claude exited ${code ?? exitSignal}: ${[diagnostics, response].filter(Boolean).join('\n') || 'No diagnostics.'}`));
+          return reject(fail('CLAUDE_EXIT', 'Claude exited without a successful result. Inspect the native session locally.'));
         }
-        try { resolve(parseResult(Buffer.concat(stdout).toString('utf8'), sessionId)); }
+        try { resolve(parseResult(Buffer.concat(stdout).toString('utf8'), sessionId, model)); }
         catch (err) { reject(err); }
       });
       // Prompt bytes never enter argv or a shell. Preserve CRLF, quotes and Unicode.

@@ -6,12 +6,12 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { ClaudeBackend, parseResult } = require('../lib/claude-backend');
-const { fixture } = require('./helpers');
+const { fixture, TestBackend } = require('./helpers');
 
 function setup(settings, mode = 'normal', timeoutMs = 15000) {
-  return new ClaudeBackend({ ...settings, command: process.execPath, prefixArgs: [path.join(__dirname, 'fake-claude.js'), '--stub-mode', mode], timeoutMs });
+  return new TestBackend({ ...settings, timeoutMs }, mode);
 }
-const input = cwd => ({ sessionId: randomUUID(), resume: false, message: 'x', cwd, model: null, permissionMode: 'dontAsk', allowedTools: [] });
+const input = cwd => ({ sessionId: randomUUID(), resume: false, message: 'x', cwd, model: 'claude-opus-5[1m]', permissionMode: 'dontAsk', allowedTools: [] });
 
 test('real subprocess passes long Unicode prompts byte-for-byte via stdin and resumes in the same cwd', async t => {
   const { cwd, settings } = await fixture(t);
@@ -86,4 +86,14 @@ test('force-killing the bridge owner also terminates Claude and detached descend
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   assert.fail('A descendant survived its bridge owner');
+});
+
+test('output caps terminate the supervised child without forwarding raw output', async t => {
+  const { cwd, settings } = await fixture(t);
+  await assert.rejects(setup(settings, 'oversize').run(input(cwd)), { code: 'OUTPUT_TOO_LARGE' });
+});
+
+test('subprocess failure diagnostics cannot leak synthetic secrets', async t => {
+  const { cwd, settings } = await fixture(t);
+  await assert.rejects(setup(settings, 'secret-exit').run(input(cwd)), e => e.code === 'CLAUDE_EXIT' && !e.message.includes('SYNTHETIC_ERROR_SECRET'));
 });

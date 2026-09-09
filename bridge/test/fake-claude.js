@@ -16,6 +16,8 @@ process.stdin.on('end', () => {
     setInterval(() => {}, 1000);
     return;
   }
+  if (mode === 'oversize') { process.stdout.write('x'.repeat(17 * 1024 * 1024)); return; }
+  if (mode === 'secret-exit') { process.stderr.write('SYNTHETIC_ERROR_SECRET'); process.stdout.write('SYNTHETIC_ERROR_SECRET'); process.exitCode = 3; return; }
   if (mode === 'invalid') { process.stdout.write('not json'); return; }
   if (mode === 'exit') { process.stderr.write('test CLI failure'); process.exitCode = 7; return; }
   const file = path.join(process.cwd(), sessionId + '.fake.json');

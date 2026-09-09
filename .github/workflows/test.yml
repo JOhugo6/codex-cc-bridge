@@ -8,14 +8,16 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  unit-and-installer:
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
-        node: [20, 24]
+        node: ['20.20.0', '24.12.0']
     defaults:
       run:
         working-directory: bridge
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,6 +25,59 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: bridge/package-lock.json
-      - run: npm ci
-      - run: npm test
-      - run: npm run doctor
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm.cmd ci --ignore-scripts --no-audit --no-fund
+      - name: Unit, subprocess and diagnostic tests (requires both PowerShell shells)
+        run: npm.cmd run test:unit
+      - name: Synthetic installer tests on PowerShell 5.1 and 7
+        run: npm.cmd run test:installer
+      - name: Non-inference MCP doctor
+        run: npm.cmd run doctor
+
+  native-contract:
+    # Required fail-closed gate: official pinned binary, hash BEFORE any execution.
+    # No latest, login, repository-variable binary, or CLI-double substitution.
+    # PR test code is separate from the trusted base-commit provisioner.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20.20.0', '24.12.0']
+    defaults:
+      run:
+        working-directory: bridge
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm.cmd ci --ignore-scripts --no-audit --no-fund
+      - name: Read provisioner from trusted base commit (not PR head)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: native-provision-source
+          persist-credentials: false
+          sparse-checkout: bridge/ci
+      - name: Download and verify official pinned Windows x64 artifact
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'claude-native-2.1.263'
+          $helper = Join-Path $env:GITHUB_WORKSPACE 'native-provision-source/bridge/ci/provision-native.js'
+          if (!(Test-Path -LiteralPath $helper -PathType Leaf)) {
+            throw 'Native gate BLOCKED: reviewed provisioner must first exist on the trusted base branch. Never substitute fork/PR-head provisioning code.'
+          }
+          node $helper --output $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = Join-Path $out 'claude.exe'
+          "NATIVE_CONTRACT_CLAUDE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Verify native version and flags in synthetic loopback and deny-proxy profile
+        run: |
+          node -e "(async()=>{const f=await require('./test/native-contract-fixture').fixture();try{await f.verifyCompatibility();console.log('Native 2.1.263 compatibility verified; synthetic metadata only.')}finally{await f.close();}})().catch(()=>{console.error('Native compatibility prerequisite failed.');process.exitCode=1;});"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Actual-native offline suites (no login, real credentials or live inference)
+        run: npm.cmd run test:native
