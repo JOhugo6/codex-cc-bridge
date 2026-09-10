@@ -6,7 +6,9 @@ const path = require('node:path');
 const { diagnostic, failure, failureDiagnostic, emit, lines } = require('./ci-diagnostics');
 const { checkCompatibility } = require('./ci-native-compatibility');
 const { main: prerequisite } = require('./ci-native-prerequisite');
-const { observations, inspectSources, main: probe } = require('./ci-supervisor-probe');
+const { observations, inspectSources, sample, runSamples, main: probe } = require('./ci-supervisor-probe');
+const { EventEmitter } = require('node:events');
+const { isDeepStrictEqual } = require('node:util');
 const SECRET = 'SYNTHETIC_DIAGNOSTIC_SECRET_C:/private/token/account/task';
 const VERSION = '2.1.263';
 const FLAGS = ['--print', '--model'];
@@ -18,6 +20,165 @@ function safe(value) {
   assert.ok(output.length < 1024);
   return output;
 }
+
+function phaseNames(mode) {
+  if (mode === 'json') return ['module-ps-start', 'json-start', 'json-complete'];
+  if (mode === 'import-json') return ['module-ps-start', 'module-import-start', 'module-import-complete', 'json-start', 'json-complete'];
+  return ['ps-start', 'breakpoint-5-set', 'breakpoint-6-set', 'supervisor-call', 'add-type-start', 'add-type-complete', 'child-start'];
+}
+function stderrPhases(phases) {
+  return phases.map(stage => stage === 'child-start' ? 'claude-bridge-child-pid:1234\n' : `ci-probe:${stage}\n`).join('');
+}
+function outputMarker(mode) {
+  return mode === 'supervisor' ? 'ci-probe:child-io\n' : 'ci-probe:module-control-complete\n';
+}
+function fakeSpawn(run, calls = []) {
+  return (command, args, options) => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    let closed = false;
+    child.finish = code => { if (!closed) { closed = true; child.emit('close', code); } };
+    child.kill = () => { child.finish(null); return true; };
+    child.stdin.end = input => { queueMicrotask(() => run(child, input)); };
+    calls.push({ command, args, options });
+    return child;
+  };
+}
+
+test('optional prefix tracking retains only loss state and preserves default line callbacks', () => {
+  for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
+    for (const length of [prefix.length, 255, 256, 257, 4096]) for (const ending of ['', '\n', '\r\n']) for (const chunked of [false, true]) {
+      const received = [], discarded = [], legacyReceived = [], legacyDiscarded = [];
+      const observe = lines(line => received.push(line), 256, (...args) => discarded.push(args), [prefix]);
+      const legacy = lines(line => legacyReceived.push(line), 256, (...args) => legacyDiscarded.push(args));
+      const text = prefix + 'x'.repeat(length - prefix.length) + ending;
+      for (const chunk of chunked ? [...text] : [text]) {
+        observe(Buffer.from(chunk)); legacy(Buffer.from(chunk));
+      }
+      const oversized = text.length > 256;
+      assert.deepEqual(received, ending && !oversized ? [text.slice(0, -ending.length)] : []);
+      assert.deepEqual(discarded, oversized ? [[]] : []);
+      assert.deepEqual(legacyReceived, received);
+      assert.deepEqual(legacyDiscarded, discarded);
+      assert.equal(observe.atBoundary(), Boolean(ending));
+      assert.equal(legacy.atBoundary(), observe.atBoundary());
+      assert.equal(legacy.hasLostPrefix(), false);
+      assert.equal(observe.hasLostPrefix(), !ending || oversized);
+      if (oversized) {
+        observe(Buffer.from('\nend\n'));
+        assert.equal(received.at(-1), 'end');
+        assert.equal(observe.hasLostPrefix(), true);
+        assert.deepEqual(discarded, [[]]);
+      }
+    }
+    const prefixes = [prefix], observe = lines(() => {}, 256, undefined, prefixes);
+    prefixes[0] = 'other:'; // The observer owns its validated prefix snapshot.
+    observe(Buffer.from(prefix.slice(0, -1)));
+    assert.equal(observe.hasLostPrefix(), false); // Not yet an identified reserved prefix.
+    observe(Buffer.from(prefix.slice(-1)));
+    assert.equal(observe.hasLostPrefix(), true);
+    observe(Buffer.from('complete\n'));
+    assert.equal(observe.hasLostPrefix(), false);
+  }
+  for (const prefixes of [null, 'ci-probe:', [null], [''], ['x'.repeat(257)]]) {
+    assert.throws(() => lines(() => {}, 256, undefined, prefixes), /Invalid line prefixes/);
+  }
+});
+
+test('reserved stderr faults survive discard, EOF and later valid phases in every probe mode', () => {
+  for (const mode of ['supervisor', 'json', 'import-json']) for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
+    const texts = [prefix, prefix + SECRET, ...[255, 256, 257, 300].map(length => prefix + 'x'.repeat(length - prefix.length))];
+    for (const text of texts) for (const ending of ['', '\n', '\r\n']) for (const chunked of [false, true]) for (const validFirst of [false, true]) {
+      const records = [], observed = observations(d => records.push(d), () => 0, mode);
+      const valid = () => {
+        observed.stderr(Buffer.from(stderrPhases(phaseNames(mode))));
+        observed.stdout(Buffer.from(outputMarker(mode)));
+      };
+      if (validFirst) { valid(); assert.equal(observed.complete(), true); }
+      const data = text + ending;
+      for (const chunk of chunked ? [...data] : [data]) observed.stderr(Buffer.from(chunk));
+      if (!validFirst) {
+        if (!ending) observed.stderr(Buffer.from('\n'));
+        valid();
+      }
+      assert.equal(observed.complete(), false, `${mode}, prefix=${prefix}, length=${text.length}, ending=${ending.length}, chunked=${chunked}, validFirst=${validFirst}`);
+      // Failure is not merely a missing phase: all expected observations arrived.
+      assert.equal(records.length, phaseNames(mode).length + 1);
+      if (mode !== 'supervisor') assert.deepEqual(observed.state(), {});
+      records.forEach(safe);
+    }
+  }
+});
+
+test('zero-exit mocked samples reject reserved partial and discarded stderr rather than report OK', async () => {
+  for (const mode of ['supervisor', 'json', 'import-json']) for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
+    for (const text of [prefix, prefix + '1234', prefix + SECRET, prefix + SECRET + '\n', prefix + SECRET + '\r',
+      prefix + 'x'.repeat(300), prefix + 'x'.repeat(300) + '\n']) for (const chunked of [false, true]) {
+      const records = [], calls = [];
+      const passed = await sample('mock-shell', path.resolve('synthetic-protocol-root'), d => records.push(d), mode,
+        fakeSpawn(child => {
+          child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames(mode))));
+          child.stdout.emit('data', Buffer.from(outputMarker(mode)));
+          for (const chunk of chunked ? [...text] : [text]) child.stderr.emit('data', Buffer.from(chunk));
+          child.finish(0);
+        }, calls));
+      assert.equal(calls.length, 1);
+      assert.equal(passed, false);
+      assert.equal(records.at(-1).code, 'PROBE_PROTOCOL');
+      assert.equal(records.at(-1).exit, 0);
+      assert.equal(records.at(-1).timedOut, false);
+      assert.equal(records.at(-1).oversized, false);
+      if (mode !== 'supervisor') for (const record of records) assert.ok(!('ready' in record) && !('childStarted' in record));
+      records.forEach(safe);
+    }
+  }
+});
+
+test('mocked samples still tolerate long and partial nonreserved stderr with embedded protocol text', async () => {
+  for (const mode of ['supervisor', 'json', 'import-json']) for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
+    for (const noise of [SECRET, SECRET.repeat(20), 'noise ' + prefix + SECRET, 'x'.repeat(300) + prefix + SECRET]) {
+      const records = [];
+      const passed = await sample('mock-shell', path.resolve('synthetic-protocol-root'), d => records.push(d), mode,
+        fakeSpawn(child => {
+          for (const character of noise + '\r\n' + stderrPhases(phaseNames(mode)) + noise) {
+            child.stderr.emit('data', Buffer.from(character));
+          }
+          for (const character of outputMarker(mode)) child.stdout.emit('data', Buffer.from(character));
+          child.finish(0);
+        }));
+      assert.equal(passed, true);
+      assert.equal(records.at(-1).code, 'OK');
+      assert.equal(records.at(-1).exit, 0);
+      if (mode !== 'supervisor') for (const record of records) assert.ok(!('ready' in record) && !('childStarted' in record));
+      records.forEach(safe);
+    }
+  }
+});
+
+test('mocked aggregate preserves a reserved stderr failure in any of the six sample positions', async () => {
+  for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) for (const ending of ['', '\n']) for (let failed = -1; failed < 6; failed++) {
+    const records = [];
+    let calls = 0;
+    const passed = await runSamples('mock-ps5', 'mock-ps7', path.resolve('synthetic-protocol-root'), d => records.push(d),
+      (shell, root, write, mode) => {
+        const bad = calls++ === failed;
+        return sample(shell, root, write, mode, fakeSpawn(child => {
+          const invalid = () => child.stderr.emit('data', Buffer.from(prefix + 'x'.repeat(300) + ending));
+          if (bad && ending) invalid(); // Discarded fault precedes all valid phases.
+          child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames(mode))));
+          child.stdout.emit('data', Buffer.from(outputMarker(mode)));
+          if (bad && !ending) invalid(); // Reserved partial line remains at EOF.
+          child.finish(0);
+        }));
+      });
+    assert.equal(calls, 6);
+    assert.equal(passed, failed === -1);
+    const closed = records.filter(record => record.stage === 'probe-close');
+    assert.deepEqual(closed.map(record => record.code), Array.from({ length: 6 }, (_, i) => i === failed ? 'PROBE_PROTOCOL' : 'OK'));
+    assert.ok(closed.every(record => record.exit === 0 && !record.timedOut && !record.oversized));
+    records.forEach(safe);
+  }
+});
 
 test('CI diagnostic allowlist rejects raw text, unbounded numbers, getters and forged errors', () => {
   const data = { stage: SECRET, code: SECRET, elapsedMs: Infinity, exit: SECRET,
@@ -185,7 +346,7 @@ test('bounded line observer preserves newline-inclusive limits and exposes parti
 });
 
 test('probe stdout cannot regain success after single or chunked discarded lines before or after valid IO', () => {
-  const phases = 'ci-probe:ps-start\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-child-pid:1234\n';
+  const phases = 'ci-probe:ps-start\nci-probe:breakpoint-5-set\nci-probe:breakpoint-6-set\nci-probe:supervisor-call\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-child-pid:1234\n';
   const marker = 'ci-probe:child-io\n';
   for (const length of [254, 255, 256, 257, 300, 4096]) {
     for (const ending of ['\n', '\r\n']) for (const chunked of [false, true]) for (const markerFirst of [false, true]) {
@@ -208,7 +369,7 @@ test('probe rejects trailing partial stdout at EOF even after all valid markers,
   for (const trailing of ['x', '\r', 'ci-probe:child-io', 'x'.repeat(256), 'x'.repeat(257), SECRET.repeat(20)]) {
     for (const chunked of [false, true]) {
       const records = [], observed = observations(d => records.push(d), () => 0);
-      observed.stderr(Buffer.from('ci-probe:ps-start\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-child-pid:1234\n'));
+      observed.stderr(Buffer.from('ci-probe:ps-start\nci-probe:breakpoint-5-set\nci-probe:breakpoint-6-set\nci-probe:supervisor-call\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-child-pid:1234\n'));
       observed.stdout(Buffer.from('ci-probe:child-io\n'));
       assert.equal(observed.complete(), true);
       for (const chunk of chunked ? [...trailing] : [trailing]) observed.stdout(Buffer.from(chunk));
@@ -221,7 +382,7 @@ test('probe rejects trailing partial stdout at EOF even after all valid markers,
 test('probe still accepts fragmented normal stdout and ignores non-marker stderr, including discarded and partial text', () => {
   const records = [], observed = observations(d => records.push(d), () => 0);
   observed.stderr(Buffer.from(SECRET.repeat(20)));
-  observed.stderr(Buffer.from('\nci-probe:ps-start\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-ch'));
+  observed.stderr(Buffer.from('\nci-probe:ps-start\nci-probe:breakpoint-5-set\nci-probe:breakpoint-6-set\nci-probe:supervisor-call\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-ch'));
   observed.stderr(Buffer.from('ild-pid:1234\r'));
   observed.stderr(Buffer.from('\n' + SECRET.repeat(20) + '\n' + SECRET));
   observed.stdout(Buffer.from('ci-probe:child-'));
@@ -232,14 +393,14 @@ test('probe still accepts fragmented normal stdout and ignores non-marker stderr
   observed.stdout(Buffer.from('\n'));
   assert.equal(observed.complete(), true);
   assert.deepEqual(observed.state(), { childStarted: true, ready: true });
-  assert.equal(records.length, 5);
+  assert.equal(records.length, 8);
   records.forEach(safe);
 });
 
 test('supervisor observations distinguish Add-Type, child start and actual IO without emitting PID or text', () => {
   const records = [];
   const observed = observations(d => records.push(d), () => 12);
-  observed.stderr(Buffer.from(SECRET + '\nci-probe:ps-start\nci-probe:add-type-st'));
+  observed.stderr(Buffer.from(SECRET + '\nci-probe:ps-start\nci-probe:breakpoint-5-set\nci-probe:breakpoint-6-set\nci-probe:supervisor-call\nci-probe:add-type-st'));
   assert.deepEqual(observed.state(), {});
   observed.stderr(Buffer.from('art\nci-probe:add-type-complete\n'));
   assert.deepEqual(observed.state(), {});
@@ -248,9 +409,9 @@ test('supervisor observations distinguish Add-Type, child start and actual IO wi
   assert.deepEqual(observed.state(), { childStarted: true, ready: true });
   observed.stderr(Buffer.from('claude-bridge-child-pid:1234\n'));
   assert.equal(observed.complete(), true);
-  assert.equal(records.length, 5);
+  assert.equal(records.length, 8);
   records.forEach(record => assert.ok(!safe(record).includes('1234')));
-  for (const record of records.slice(0, 3)) assert.ok(!('childStarted' in record) && !('ready' in record));
+  for (const record of records.slice(0, 6)) assert.ok(!('childStarted' in record) && !('ready' in record));
 });
 
 test('missing, duplicate and unordered probe markers fail closed; readiness stays unavailable until observed', () => {
@@ -305,4 +466,170 @@ test('CI wiring keeps explicit suite splits, fail-closed native prerequisite and
   assert.ok(native.indexOf('run: npm.cmd run test:native') < native.indexOf('node test/ci-supervisor-probe.js'));
   assert.ok(workflow.includes('github.event.pull_request.base.sha || github.sha'));
   assert.ok(workflow.includes('sparse-checkout: bridge/ci'));
+});
+
+test('every supervisor and module phase is required exactly once in stderr order', () => {
+  for (const mode of ['supervisor', 'json', 'import-json']) {
+    const phases = phaseNames(mode);
+    const variants = [phases, ...phases.map((_, i) => phases.filter((_, j) => i !== j)),
+      ...phases.map((_, i) => [...phases.slice(0, i), phases[i], ...phases.slice(i)]), [...phases].reverse()];
+    for (const [index, variant] of variants.entries()) {
+      const records = [], observed = observations(d => records.push(d), () => 0, mode);
+      // Cross-pipe ordering is deliberately unconstrained.
+      observed.stdout(Buffer.from(outputMarker(mode)));
+      observed.stderr(Buffer.from(stderrPhases(variant)));
+      assert.equal(observed.complete(), index === 0, `${mode} variant ${index}`);
+      if (mode !== 'supervisor') {
+        assert.deepEqual(observed.state(), {});
+        for (const record of records) assert.ok(!('ready' in record) && !('childStarted' in record));
+      }
+      records.forEach(safe);
+    }
+  }
+  assert.throws(() => observations(() => {}, () => 0, SECRET), /Invalid probe mode/);
+});
+
+test('module controls accept fragmented markers and stderr noise without implying readiness', () => {
+  for (const mode of ['json', 'import-json']) {
+    const records = [], observed = observations(d => records.push(d), () => 5, mode);
+    observed.stderr(Buffer.from(SECRET.repeat(20) + '\n'));
+    for (const character of stderrPhases(phaseNames(mode))) observed.stderr(Buffer.from(character));
+    observed.stderr(Buffer.from(SECRET.repeat(20) + '\n' + SECRET));
+    assert.equal(observed.complete(), false);
+    for (const character of outputMarker(mode)) observed.stdout(Buffer.from(character));
+    assert.equal(observed.complete(), true);
+    assert.deepEqual(observed.state(), {});
+    assert.equal(records.at(-1).stage, 'module-control-complete');
+    for (const record of records) { safe(record); assert.ok(!('ready' in record) && !('childStarted' in record)); }
+  }
+});
+
+test('module controls reject malformed, discarded, duplicated and incomplete stdout', () => {
+  for (const mode of ['json', 'import-json']) {
+    const marker = outputMarker(mode);
+    const invalid = ['', 'ci-probe:child-io\n', marker + marker, 'garbage\n' + marker,
+      'x'.repeat(300) + '\n' + marker, marker + 'x'.repeat(300) + '\n', marker + 'x', marker + '\r', marker.slice(0, -1)];
+    for (const text of invalid) for (const chunked of [false, true]) {
+      const records = [], observed = observations(d => records.push(d), () => 0, mode);
+      observed.stderr(Buffer.from(stderrPhases(phaseNames(mode))));
+      for (const chunk of chunked ? [...text] : [text]) observed.stdout(Buffer.from(chunk));
+      assert.equal(observed.complete(), false);
+      assert.deepEqual(observed.state(), {});
+      records.forEach(safe);
+    }
+    for (const unexpected of ['ci-probe:ps-start\n', 'ci-probe:' + SECRET + '\n', 'claude-bridge-child-pid:1234\n']) {
+      const observed = observations(() => {}, () => 0, mode);
+      observed.stderr(Buffer.from(stderrPhases(phaseNames(mode)) + unexpected));
+      observed.stdout(Buffer.from(marker));
+      assert.equal(observed.complete(), false);
+      assert.deepEqual(observed.state(), {});
+    }
+  }
+});
+
+test('mocked sample checks child exits and protocol instead of treating module output as readiness', async () => {
+  for (const mode of ['supervisor', 'json', 'import-json']) for (const expected of ['OK', 'EXIT_NONZERO', 'PROBE_PROTOCOL', 'SPAWN_FAILED', 'OUTPUT_LIMIT']) {
+    const records = [], calls = [];
+    const passed = await sample('mock-shell', path.resolve('synthetic-module-control'), d => records.push(d), mode,
+      fakeSpawn((child, input) => {
+        assert.equal(input, mode === 'supervisor' ? 'CI_PROBE_INPUT\n' : '');
+        if (expected === 'SPAWN_FAILED') { child.emit('error', new Error(SECRET)); child.finish(null); return; }
+        child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames(mode))));
+        child.stdout.emit('data', Buffer.from(expected === 'OUTPUT_LIMIT' ? 'x'.repeat(65537)
+          : expected === 'PROBE_PROTOCOL' ? outputMarker(mode) + 'trailing' : outputMarker(mode)));
+        child.finish(expected === 'EXIT_NONZERO' ? 7 : 0);
+      }, calls));
+    assert.equal(calls.length, 1);
+    assert.equal(passed, expected === 'OK');
+    assert.equal(records.at(-1).code, expected);
+    if (expected === 'EXIT_NONZERO') assert.equal(records.at(-1).exit, 7);
+    if (expected === 'OK') assert.equal(records.at(-1).exit, 0);
+    if (mode !== 'supervisor') for (const record of records) assert.ok(!('childStarted' in record) && !('ready' in record));
+    records.forEach(safe);
+  }
+});
+
+test('mocked module controls keep the existing 15-second bound', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    for (const mode of ['json', 'import-json']) {
+      const records = [];
+      let settled = false;
+      const pending = sample('mock-shell', path.resolve('synthetic-module-control'), d => records.push(d), mode,
+        fakeSpawn(() => {})).then(value => { settled = true; return value; });
+      t.mock.timers.tick(14999);
+      assert.equal(settled, false);
+      assert.equal(records.length, 0);
+      t.mock.timers.tick(1);
+      assert.equal(await pending, false);
+      assert.equal(records.at(-1).code, 'TIMEOUT');
+      assert.equal(records.at(-1).timedOut, true);
+      assert.ok(!('ready' in records.at(-1)) && !('childStarted' in records.at(-1)));
+    }
+  } finally { t.mock.timers.reset(); }
+});
+
+test('mocked controls use the same synthetic environment and only fixed mode arguments', async () => {
+  const calls = [], root = path.resolve('synthetic-module-control');
+  for (const mode of ['supervisor', 'json', 'import-json']) {
+    assert.equal(await sample('mock-shell', root, () => {}, mode, fakeSpawn(child => {
+      child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames(mode))));
+      child.stdout.emit('data', Buffer.from(outputMarker(mode))); child.finish(0);
+    }, calls)), true);
+  }
+  for (const call of calls) {
+    assert.equal(call.command, 'mock-shell');
+    assert.ok(isDeepStrictEqual(call.options.env, calls[0].options.env));
+    assert.ok(call.options.cwd === root && call.options.env.HOME === root && call.options.env.USERPROFILE === root);
+    assert.ok(call.options.env.APPDATA === path.join(root, 'appdata') && call.options.env.LOCALAPPDATA === path.join(root, 'localappdata'));
+    assert.equal(call.options.env.CLAUDE_BRIDGE_CHILD, '1');
+    assert.ok(!Object.keys(call.options.env).some(key => /^(PSMODULEPATH|WINPSMODULEPATH|ANTHROPIC_|CLAUDE_CONFIG_DIR)/i.test(key)));
+  }
+  for (const [index, mode] of ['json', 'import-json'].entries()) {
+    const args = calls[index + 1].args;
+    assert.equal(args.length, 6);
+    assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-File']);
+    assert.equal(path.basename(args[3]), 'ci-module-control.ps1');
+    assert.deepEqual(args.slice(4), ['-Mode', mode]);
+  }
+});
+
+test('two PS5 module controls follow all original samples and cannot erase any failure', async () => {
+  const expected = [['ps5', 'supervisor'], ['ps5', 'supervisor'], ['ps7', 'supervisor'], ['ps7', 'supervisor'],
+    ['ps5', 'json'], ['ps5', 'import-json']];
+  const headers = ['probe-ps5-first', 'probe-ps5-repeat', 'probe-ps7-first', 'probe-ps7-repeat', 'control-ps5-json', 'control-ps5-import-json'];
+  for (let failed = -1; failed < 6; failed++) for (const throws of [false, true]) {
+    const calls = [], records = [];
+    let active = 0, peak = 0;
+    const passed = await runSamples('ps5', 'ps7', 'synthetic-root', d => records.push(d), async (shell, root, write, mode) => {
+      assert.equal(root, 'synthetic-root');
+      const index = calls.length;
+      calls.push([shell, mode]); active++; peak = Math.max(peak, active);
+      await Promise.resolve(); active--;
+      if (index === failed && throws) throw new Error(SECRET);
+      return index !== failed;
+    });
+    assert.equal(passed, failed === -1);
+    assert.equal(peak, 1);
+    assert.deepEqual(calls, expected);
+    assert.deepEqual(records.filter(d => d.stage !== 'probe-close').map(d => d.stage), headers);
+    records.forEach(safe);
+  }
+});
+
+test('module and breakpoint scripts retain bounded fixed instrumentation and shell-owned import', async () => {
+  const wrapper = await fs.readFile(path.join(__dirname, 'ci-supervisor-probe.ps1'), 'utf8');
+  const order = ["Set-PSBreakpoint -Script $Supervisor -Line 5", "ci-probe:breakpoint-5-set",
+    "Set-PSBreakpoint -Script $Supervisor -Line 6", "ci-probe:breakpoint-6-set", "ci-probe:supervisor-call", '& $Supervisor -LaunchBase64 $LaunchBase64'];
+  for (let i = 1; i < order.length; i++) assert.ok(wrapper.indexOf(order[i]) > wrapper.indexOf(order[i - 1]));
+  const control = await fs.readFile(path.join(__dirname, 'ci-module-control.ps1'), 'utf8');
+  assert.ok(control.includes("[ValidateSet('json', 'import-json')]"));
+  assert.ok(control.includes("[IO.Path]::Combine($PSHOME, 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')"));
+  assert.ok(control.includes('Import-Module -Name $manifest -ErrorAction Stop'));
+  assert.ok(control.includes("$value = '{\"value\":7}' | ConvertFrom-Json"));
+  assert.ok(control.includes('if ($null -eq $value -or $value.value -ne 7) { exit 1 }'));
+  assert.ok(control.indexOf('ci-probe:json-complete') > control.indexOf('$value.value -ne 7'));
+  assert.ok(control.indexOf('ci-probe:module-control-complete') > control.indexOf('ci-probe:json-complete'));
+  assert.ok(!/Set-PSBreakpoint|Add-Type|PSModulePath|Set-ExecutionPolicy|\.Exception|\$env:/i.test(control));
+  assert.ok(!control.includes('ci-probe:child-io') && !control.includes('claude-bridge-child-pid:'));
 });

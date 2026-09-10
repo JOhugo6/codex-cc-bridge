@@ -2,7 +2,10 @@
 
 // TEST ONLY. No arbitrary error/child text crosses this diagnostic boundary.
 const STAGES = new Set(['unknown', 'fixture', 'cleanup', 'native-version', 'native-help',
-  'probe-setup', 'probe-ps5-first', 'probe-ps5-repeat', 'probe-ps7-first', 'probe-ps7-repeat', 'ps-start', 'add-type-start', 'add-type-complete', 'child-start', 'child-io', 'probe-close']);
+  'probe-setup', 'probe-ps5-first', 'probe-ps5-repeat', 'probe-ps7-first', 'probe-ps7-repeat',
+  'ps-start', 'breakpoint-5-set', 'breakpoint-6-set', 'supervisor-call', 'add-type-start', 'add-type-complete',
+  'child-start', 'child-io', 'probe-close', 'control-ps5-json', 'control-ps5-import-json',
+  'module-ps-start', 'module-import-start', 'module-import-complete', 'json-start', 'json-complete', 'module-control-complete']);
 const CODES = new Set(['OK', 'UNKNOWN', 'SPAWN_FAILED', 'TIMEOUT', 'OUTPUT_LIMIT', 'EXIT_NONZERO',
   'VERSION_MISMATCH', 'FLAGS_MISSING', 'INVALID_RESULT', 'PROBE_PROTOCOL', 'SOURCE_MISMATCH',
   'ENOENT', 'EACCES', 'EPERM', 'ENOMEM', 'EAGAIN']);
@@ -38,26 +41,40 @@ function failureDiagnostic(error) {
 function emit(value, write = line => process.stdout.write(line + '\n')) {
   write(JSON.stringify(diagnostic(field(value, 'stage'), value)));
 }
-function lines(onLine, limit = 256, onDiscard = () => {}) {
-  let pending = '', discarded = false;
+function lines(onLine, limit = 256, onDiscard = () => {}, prefixes = []) {
+  if (!Array.isArray(prefixes) || prefixes.some(prefix => typeof prefix !== 'string' || !prefix.length || !(prefix.length <= limit))) {
+    throw new TypeError('Invalid line prefixes');
+  }
+  const tracked = [...prefixes];
+  const prefixLimit = tracked.reduce((max, prefix) => Math.max(max, prefix.length), 0);
+  let pending = '', discarded = false, matchedPrefix = false, discardedPrefix = false;
   const observe = chunk => {
     for (const part of chunk.toString('utf8').split(/(?<=\n)/)) {
       if (!discarded) {
+        // Inspect only a bounded line prefix, before an overlong line is lost.
+        if (!matchedPrefix && pending.length < prefixLimit) {
+          const start = pending + part.slice(0, prefixLimit - pending.length);
+          matchedPrefix = tracked.some(prefix => start.startsWith(prefix));
+        }
         // Count the terminator as before, but never retain an oversized line.
         if (pending.length + part.length > limit) {
+          discardedPrefix ||= matchedPrefix;
           pending = ''; discarded = true;
           onDiscard(); // Notify immediately, once per line, without raw text.
         } else pending += part;
       }
       if (part.endsWith('\n')) {
         if (!discarded) onLine(pending.replace(/\r?\n$/, ''));
-        pending = ''; discarded = false;
+        pending = ''; discarded = false; matchedPrefix = false;
       }
     }
   };
   // Strict callers can reject trailing partial input at EOF; stderr observers
   // still ignore noise and only receive complete, bounded lines by default.
   observe.atBoundary = () => pending.length === 0 && !discarded;
+  // At EOF, identify tracked prefixes in discarded or unfinished lines using
+  // only booleans. A later valid line cannot erase a discarded-prefix fault.
+  observe.hasLostPrefix = () => discardedPrefix || matchedPrefix;
   return observe;
 }
 module.exports = { diagnostic, failure, failureDiagnostic, emit, field, lines };

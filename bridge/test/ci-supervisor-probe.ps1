@@ -11,9 +11,12 @@ try {
     Set-PSBreakpoint -Script $Supervisor -Line 5 -Action {
         [Console]::Error.WriteLine('ci-probe:add-type-start')
     } | Out-Null
+    [Console]::Error.WriteLine('ci-probe:breakpoint-5-set')
     Set-PSBreakpoint -Script $Supervisor -Line 6 -Action {
         [Console]::Error.WriteLine('ci-probe:add-type-complete')
     } | Out-Null
+    [Console]::Error.WriteLine('ci-probe:breakpoint-6-set')
+    [Console]::Error.WriteLine('ci-probe:supervisor-call')
     & $Supervisor -LaunchBase64 $LaunchBase64
     exit $LASTEXITCODE
 } catch {
