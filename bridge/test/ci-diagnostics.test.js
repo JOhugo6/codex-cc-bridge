@@ -6,7 +6,7 @@ const path = require('node:path');
 const { diagnostic, failure, failureDiagnostic, emit, lines } = require('./ci-diagnostics');
 const { checkCompatibility } = require('./ci-native-compatibility');
 const { main: prerequisite } = require('./ci-native-prerequisite');
-const { observations, inspectSources, sample, runSamples, main: probe } = require('./ci-supervisor-probe');
+const { observations, inspectSources, sample, runSamples, parseArgs, main: probe } = require('./ci-supervisor-probe');
 const { EventEmitter } = require('node:events');
 const { isDeepStrictEqual } = require('node:util');
 const SECRET = 'SYNTHETIC_DIAGNOSTIC_SECRET_C:/private/token/account/task';
@@ -22,15 +22,16 @@ function safe(value) {
 }
 
 function phaseNames(mode) {
+  if (mode === 'direct') return ['child-start'];
   if (mode === 'json') return ['module-ps-start', 'json-start', 'json-complete'];
   if (mode === 'import-json') return ['module-ps-start', 'module-import-start', 'module-import-complete', 'json-start', 'json-complete'];
-  return ['ps-start', 'breakpoint-5-set', 'breakpoint-6-set', 'supervisor-call', 'add-type-start', 'add-type-complete', 'child-start'];
+  return ['ps-start', 'breakpoint-6-set', 'breakpoint-7-set', 'supervisor-call', 'add-type-start', 'add-type-complete', 'child-start'];
 }
 function stderrPhases(phases) {
   return phases.map(stage => stage === 'child-start' ? 'claude-bridge-child-pid:1234\n' : `ci-probe:${stage}\n`).join('');
 }
 function outputMarker(mode) {
-  return mode === 'supervisor' ? 'ci-probe:child-io\n' : 'ci-probe:module-control-complete\n';
+  return ['direct', 'supervisor'].includes(mode) ? 'ci-probe:child-io\n' : 'ci-probe:module-control-complete\n';
 }
 function fakeSpawn(run, calls = []) {
   return (command, args, options) => {
@@ -86,7 +87,7 @@ test('optional prefix tracking retains only loss state and preserves default lin
 });
 
 test('reserved stderr faults survive discard, EOF and later valid phases in every probe mode', () => {
-  for (const mode of ['supervisor', 'json', 'import-json']) for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
+  for (const mode of ['direct', 'supervisor', 'json', 'import-json']) for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
     const texts = [prefix, prefix + SECRET, ...[255, 256, 257, 300].map(length => prefix + 'x'.repeat(length - prefix.length))];
     for (const text of texts) for (const ending of ['', '\n', '\r\n']) for (const chunked of [false, true]) for (const validFirst of [false, true]) {
       const records = [], observed = observations(d => records.push(d), () => 0, mode);
@@ -104,14 +105,14 @@ test('reserved stderr faults survive discard, EOF and later valid phases in ever
       assert.equal(observed.complete(), false, `${mode}, prefix=${prefix}, length=${text.length}, ending=${ending.length}, chunked=${chunked}, validFirst=${validFirst}`);
       // Failure is not merely a missing phase: all expected observations arrived.
       assert.equal(records.length, phaseNames(mode).length + 1);
-      if (mode !== 'supervisor') assert.deepEqual(observed.state(), {});
+      if (!['direct', 'supervisor'].includes(mode)) assert.deepEqual(observed.state(), {});
       records.forEach(safe);
     }
   }
 });
 
 test('zero-exit mocked samples reject reserved partial and discarded stderr rather than report OK', async () => {
-  for (const mode of ['supervisor', 'json', 'import-json']) for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
+  for (const mode of ['direct', 'supervisor', 'json', 'import-json']) for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
     for (const text of [prefix, prefix + '1234', prefix + SECRET, prefix + SECRET + '\n', prefix + SECRET + '\r',
       prefix + 'x'.repeat(300), prefix + 'x'.repeat(300) + '\n']) for (const chunked of [false, true]) {
       const records = [], calls = [];
@@ -128,14 +129,14 @@ test('zero-exit mocked samples reject reserved partial and discarded stderr rath
       assert.equal(records.at(-1).exit, 0);
       assert.equal(records.at(-1).timedOut, false);
       assert.equal(records.at(-1).oversized, false);
-      if (mode !== 'supervisor') for (const record of records) assert.ok(!('ready' in record) && !('childStarted' in record));
+      if (!['direct', 'supervisor'].includes(mode)) for (const record of records) assert.ok(!('ready' in record) && !('childStarted' in record));
       records.forEach(safe);
     }
   }
 });
 
 test('mocked samples still tolerate long and partial nonreserved stderr with embedded protocol text', async () => {
-  for (const mode of ['supervisor', 'json', 'import-json']) for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
+  for (const mode of ['direct', 'supervisor', 'json', 'import-json']) for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) {
     for (const noise of [SECRET, SECRET.repeat(20), 'noise ' + prefix + SECRET, 'x'.repeat(300) + prefix + SECRET]) {
       const records = [];
       const passed = await sample('mock-shell', path.resolve('synthetic-protocol-root'), d => records.push(d), mode,
@@ -149,34 +150,37 @@ test('mocked samples still tolerate long and partial nonreserved stderr with emb
       assert.equal(passed, true);
       assert.equal(records.at(-1).code, 'OK');
       assert.equal(records.at(-1).exit, 0);
-      if (mode !== 'supervisor') for (const record of records) assert.ok(!('ready' in record) && !('childStarted' in record));
+      if (!['direct', 'supervisor'].includes(mode)) for (const record of records) assert.ok(!('ready' in record) && !('childStarted' in record));
       records.forEach(safe);
     }
   }
 });
 
-test('mocked aggregate preserves a reserved stderr failure in any of the six sample positions', async () => {
-  for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) for (const ending of ['', '\n']) for (let failed = -1; failed < 6; failed++) {
-    const records = [];
-    let calls = 0;
-    const passed = await runSamples('mock-ps5', 'mock-ps7', path.resolve('synthetic-protocol-root'), d => records.push(d),
-      (shell, root, write, mode) => {
-        const bad = calls++ === failed;
-        return sample(shell, root, write, mode, fakeSpawn(child => {
-          const invalid = () => child.stderr.emit('data', Buffer.from(prefix + 'x'.repeat(300) + ending));
-          if (bad && ending) invalid(); // Discarded fault precedes all valid phases.
-          child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames(mode))));
-          child.stdout.emit('data', Buffer.from(outputMarker(mode)));
-          if (bad && !ending) invalid(); // Reserved partial line remains at EOF.
-          child.finish(0);
-        }));
-      });
-    assert.equal(calls, 6);
-    assert.equal(passed, failed === -1);
-    const closed = records.filter(record => record.stage === 'probe-close');
-    assert.deepEqual(closed.map(record => record.code), Array.from({ length: 6 }, (_, i) => i === failed ? 'PROBE_PROTOCOL' : 'OK'));
-    assert.ok(closed.every(record => record.exit === 0 && !record.timedOut && !record.oversized));
-    records.forEach(safe);
+test('mocked aggregate preserves reserved stderr failures in all four or ten selected positions', async () => {
+  for (const legacyDiagnostics of [false, true]) {
+    const count = legacyDiagnostics ? 10 : 4;
+    for (const prefix of ['ci-probe:', 'claude-bridge-child-pid:']) for (const ending of ['', '\n']) for (let failed = -1; failed < count; failed++) {
+      const records = [];
+      let calls = 0;
+      const passed = await runSamples('mock-ps5', 'mock-ps7', path.resolve('synthetic-protocol-root'), d => records.push(d),
+        (shell, root, write, mode) => {
+          const bad = calls++ === failed;
+          return sample(shell, root, write, mode, fakeSpawn(child => {
+            const invalid = () => child.stderr.emit('data', Buffer.from(prefix + 'x'.repeat(300) + ending));
+            if (bad && ending) invalid(); // Discarded fault precedes all valid phases.
+            child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames(mode))));
+            child.stdout.emit('data', Buffer.from(outputMarker(mode)));
+            if (bad && !ending) invalid(); // Reserved partial line remains at EOF.
+            child.finish(0);
+          }));
+        }, legacyDiagnostics);
+      assert.equal(calls, count);
+      assert.equal(passed, failed === -1);
+      const closed = records.filter(record => record.stage === 'probe-close');
+      assert.deepEqual(closed.map(record => record.code), Array.from({ length: count }, (_, i) => i === failed ? 'PROBE_PROTOCOL' : 'OK'));
+      assert.ok(closed.every(record => record.exit === 0 && !record.timedOut && !record.oversized));
+      records.forEach(safe);
+    }
   }
 });
 
@@ -346,11 +350,11 @@ test('bounded line observer preserves newline-inclusive limits and exposes parti
 });
 
 test('probe stdout cannot regain success after single or chunked discarded lines before or after valid IO', () => {
-  const phases = 'ci-probe:ps-start\nci-probe:breakpoint-5-set\nci-probe:breakpoint-6-set\nci-probe:supervisor-call\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-child-pid:1234\n';
   const marker = 'ci-probe:child-io\n';
-  for (const length of [254, 255, 256, 257, 300, 4096]) {
+  for (const mode of ['direct', 'supervisor']) for (const length of [254, 255, 256, 257, 300, 4096]) {
+    const phases = stderrPhases(phaseNames(mode));
     for (const ending of ['\n', '\r\n']) for (const chunked of [false, true]) for (const markerFirst of [false, true]) {
-      const records = [], observed = observations(d => records.push(d), () => 0);
+      const records = [], observed = observations(d => records.push(d), () => 0, mode);
       // IO and supervisor stderr may arrive in either cross-pipe order.
       if (markerFirst) observed.stdout(Buffer.from(marker));
       else observed.stderr(Buffer.from(phases));
@@ -366,10 +370,10 @@ test('probe stdout cannot regain success after single or chunked discarded lines
 });
 
 test('probe rejects trailing partial stdout at EOF even after all valid markers, without requiring a newline', () => {
-  for (const trailing of ['x', '\r', 'ci-probe:child-io', 'x'.repeat(256), 'x'.repeat(257), SECRET.repeat(20)]) {
+  for (const mode of ['direct', 'supervisor']) for (const trailing of ['x', '\r', 'ci-probe:child-io', 'x'.repeat(256), 'x'.repeat(257), SECRET.repeat(20)]) {
     for (const chunked of [false, true]) {
-      const records = [], observed = observations(d => records.push(d), () => 0);
-      observed.stderr(Buffer.from('ci-probe:ps-start\nci-probe:breakpoint-5-set\nci-probe:breakpoint-6-set\nci-probe:supervisor-call\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-child-pid:1234\n'));
+      const records = [], observed = observations(d => records.push(d), () => 0, mode);
+      observed.stderr(Buffer.from(stderrPhases(phaseNames(mode))));
       observed.stdout(Buffer.from('ci-probe:child-io\n'));
       assert.equal(observed.complete(), true);
       for (const chunk of chunked ? [...trailing] : [trailing]) observed.stdout(Buffer.from(chunk));
@@ -382,7 +386,7 @@ test('probe rejects trailing partial stdout at EOF even after all valid markers,
 test('probe still accepts fragmented normal stdout and ignores non-marker stderr, including discarded and partial text', () => {
   const records = [], observed = observations(d => records.push(d), () => 0);
   observed.stderr(Buffer.from(SECRET.repeat(20)));
-  observed.stderr(Buffer.from('\nci-probe:ps-start\nci-probe:breakpoint-5-set\nci-probe:breakpoint-6-set\nci-probe:supervisor-call\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-ch'));
+  observed.stderr(Buffer.from('\nci-probe:ps-start\nci-probe:breakpoint-6-set\nci-probe:breakpoint-7-set\nci-probe:supervisor-call\nci-probe:add-type-start\nci-probe:add-type-complete\nclaude-bridge-ch'));
   observed.stderr(Buffer.from('ild-pid:1234\r'));
   observed.stderr(Buffer.from('\n' + SECRET.repeat(20) + '\n' + SECRET));
   observed.stdout(Buffer.from('ci-probe:child-'));
@@ -400,7 +404,7 @@ test('probe still accepts fragmented normal stdout and ignores non-marker stderr
 test('supervisor observations distinguish Add-Type, child start and actual IO without emitting PID or text', () => {
   const records = [];
   const observed = observations(d => records.push(d), () => 12);
-  observed.stderr(Buffer.from(SECRET + '\nci-probe:ps-start\nci-probe:breakpoint-5-set\nci-probe:breakpoint-6-set\nci-probe:supervisor-call\nci-probe:add-type-st'));
+  observed.stderr(Buffer.from(SECRET + '\nci-probe:ps-start\nci-probe:breakpoint-6-set\nci-probe:breakpoint-7-set\nci-probe:supervisor-call\nci-probe:add-type-st'));
   assert.deepEqual(observed.state(), {});
   observed.stderr(Buffer.from('art\nci-probe:add-type-complete\n'));
   assert.deepEqual(observed.state(), {});
@@ -431,8 +435,8 @@ test('test-only probe requires inspected unchanged supervisor source and explici
   assert.equal(await probe([], value => records.push(value)), 1);
   assert.deepEqual(records, [{ stage: 'probe-setup', code: 'INVALID_RESULT' }]);
   const wrapper = await fs.readFile(path.join(__dirname, 'ci-supervisor-probe.ps1'), 'utf8');
-  assert.ok(wrapper.includes('Set-PSBreakpoint -Script $Supervisor -Line 5'));
   assert.ok(wrapper.includes('Set-PSBreakpoint -Script $Supervisor -Line 6'));
+  assert.ok(wrapper.includes('Set-PSBreakpoint -Script $Supervisor -Line 7'));
   assert.ok(wrapper.includes('& $Supervisor -LaunchBase64 $LaunchBase64'));
 });
 
@@ -469,17 +473,17 @@ test('CI wiring keeps explicit suite splits, fail-closed native prerequisite and
 });
 
 test('every supervisor and module phase is required exactly once in stderr order', () => {
-  for (const mode of ['supervisor', 'json', 'import-json']) {
+  for (const mode of ['direct', 'supervisor', 'json', 'import-json']) {
     const phases = phaseNames(mode);
     const variants = [phases, ...phases.map((_, i) => phases.filter((_, j) => i !== j)),
-      ...phases.map((_, i) => [...phases.slice(0, i), phases[i], ...phases.slice(i)]), [...phases].reverse()];
+      ...phases.map((_, i) => [...phases.slice(0, i), phases[i], ...phases.slice(i)]), ...(phases.length > 1 ? [[...phases].reverse()] : [])];
     for (const [index, variant] of variants.entries()) {
       const records = [], observed = observations(d => records.push(d), () => 0, mode);
       // Cross-pipe ordering is deliberately unconstrained.
       observed.stdout(Buffer.from(outputMarker(mode)));
       observed.stderr(Buffer.from(stderrPhases(variant)));
       assert.equal(observed.complete(), index === 0, `${mode} variant ${index}`);
-      if (mode !== 'supervisor') {
+      if (!['direct', 'supervisor'].includes(mode)) {
         assert.deepEqual(observed.state(), {});
         for (const record of records) assert.ok(!('ready' in record) && !('childStarted' in record));
       }
@@ -528,11 +532,11 @@ test('module controls reject malformed, discarded, duplicated and incomplete std
 });
 
 test('mocked sample checks child exits and protocol instead of treating module output as readiness', async () => {
-  for (const mode of ['supervisor', 'json', 'import-json']) for (const expected of ['OK', 'EXIT_NONZERO', 'PROBE_PROTOCOL', 'SPAWN_FAILED', 'OUTPUT_LIMIT']) {
+  for (const mode of ['direct', 'supervisor', 'json', 'import-json']) for (const expected of ['OK', 'EXIT_NONZERO', 'PROBE_PROTOCOL', 'SPAWN_FAILED', 'OUTPUT_LIMIT']) {
     const records = [], calls = [];
     const passed = await sample('mock-shell', path.resolve('synthetic-module-control'), d => records.push(d), mode,
       fakeSpawn((child, input) => {
-        assert.equal(input, mode === 'supervisor' ? 'CI_PROBE_INPUT\n' : '');
+        assert.equal(input, ['direct', 'supervisor'].includes(mode) ? 'CI_PROBE_INPUT\n' : '');
         if (expected === 'SPAWN_FAILED') { child.emit('error', new Error(SECRET)); child.finish(null); return; }
         child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames(mode))));
         child.stdout.emit('data', Buffer.from(expected === 'OUTPUT_LIMIT' ? 'x'.repeat(65537)
@@ -544,15 +548,15 @@ test('mocked sample checks child exits and protocol instead of treating module o
     assert.equal(records.at(-1).code, expected);
     if (expected === 'EXIT_NONZERO') assert.equal(records.at(-1).exit, 7);
     if (expected === 'OK') assert.equal(records.at(-1).exit, 0);
-    if (mode !== 'supervisor') for (const record of records) assert.ok(!('childStarted' in record) && !('ready' in record));
+    if (!['direct', 'supervisor'].includes(mode)) for (const record of records) assert.ok(!('childStarted' in record) && !('ready' in record));
     records.forEach(safe);
   }
 });
 
-test('mocked module controls keep the existing 15-second bound', async t => {
+test('mocked samples in every mode keep the existing 15-second bound', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   try {
-    for (const mode of ['json', 'import-json']) {
+    for (const mode of ['direct', 'supervisor', 'json', 'import-json']) {
       const records = [];
       let settled = false;
       const pending = sample('mock-shell', path.resolve('synthetic-module-control'), d => records.push(d), mode,
@@ -571,7 +575,7 @@ test('mocked module controls keep the existing 15-second bound', async t => {
 
 test('mocked controls use the same synthetic environment and only fixed mode arguments', async () => {
   const calls = [], root = path.resolve('synthetic-module-control');
-  for (const mode of ['supervisor', 'json', 'import-json']) {
+  for (const mode of ['direct', 'supervisor', 'json', 'import-json']) {
     assert.equal(await sample('mock-shell', root, () => {}, mode, fakeSpawn(child => {
       child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames(mode))));
       child.stdout.emit('data', Buffer.from(outputMarker(mode))); child.finish(0);
@@ -586,7 +590,7 @@ test('mocked controls use the same synthetic environment and only fixed mode arg
     assert.ok(!Object.keys(call.options.env).some(key => /^(PSMODULEPATH|WINPSMODULEPATH|ANTHROPIC_|CLAUDE_CONFIG_DIR)/i.test(key)));
   }
   for (const [index, mode] of ['json', 'import-json'].entries()) {
-    const args = calls[index + 1].args;
+    const args = calls[index + 2].args;
     assert.equal(args.length, 6);
     assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-File']);
     assert.equal(path.basename(args[3]), 'ci-module-control.ps1');
@@ -594,33 +598,194 @@ test('mocked controls use the same synthetic environment and only fixed mode arg
   }
 });
 
-test('two PS5 module controls follow all original samples and cannot erase any failure', async () => {
-  const expected = [['ps5', 'supervisor'], ['ps5', 'supervisor'], ['ps7', 'supervisor'], ['ps7', 'supervisor'],
+test('four direct samples precede optional legacy samples and preserve every failure or exception', async () => {
+  const direct = [['ps5', 'direct'], ['ps5', 'direct'], ['ps7', 'direct'], ['ps7', 'direct']];
+  const legacy = [['ps5', 'supervisor'], ['ps5', 'supervisor'], ['ps7', 'supervisor'], ['ps7', 'supervisor'],
     ['ps5', 'json'], ['ps5', 'import-json']];
-  const headers = ['probe-ps5-first', 'probe-ps5-repeat', 'probe-ps7-first', 'probe-ps7-repeat', 'control-ps5-json', 'control-ps5-import-json'];
-  for (let failed = -1; failed < 6; failed++) for (const throws of [false, true]) {
-    const calls = [], records = [];
-    let active = 0, peak = 0;
-    const passed = await runSamples('ps5', 'ps7', 'synthetic-root', d => records.push(d), async (shell, root, write, mode) => {
-      assert.equal(root, 'synthetic-root');
-      const index = calls.length;
-      calls.push([shell, mode]); active++; peak = Math.max(peak, active);
-      await Promise.resolve(); active--;
-      if (index === failed && throws) throw new Error(SECRET);
-      return index !== failed;
-    });
-    assert.equal(passed, failed === -1);
-    assert.equal(peak, 1);
-    assert.deepEqual(calls, expected);
-    assert.deepEqual(records.filter(d => d.stage !== 'probe-close').map(d => d.stage), headers);
-    records.forEach(safe);
+  const directHeaders = ['direct-ps5-first', 'direct-ps5-repeat', 'direct-ps7-first', 'direct-ps7-repeat'];
+  const legacyHeaders = ['probe-ps5-first', 'probe-ps5-repeat', 'probe-ps7-first', 'probe-ps7-repeat', 'control-ps5-json', 'control-ps5-import-json'];
+  for (const legacyDiagnostics of [false, true]) {
+    const expected = legacyDiagnostics ? [...direct, ...legacy] : direct;
+    const headers = legacyDiagnostics ? [...directHeaders, ...legacyHeaders] : directHeaders;
+    for (let failed = -1; failed < expected.length; failed++) for (const throws of [false, true]) {
+      const calls = [], records = [];
+      let active = 0, peak = 0;
+      const runSample = async (shell, root, write, mode) => {
+        assert.equal(root, 'synthetic-root');
+        const index = calls.length;
+        calls.push([shell, mode]); active++; peak = Math.max(peak, active);
+        await Promise.resolve(); active--;
+        if (index === failed && throws) throw new Error(SECRET);
+        return index !== failed;
+      };
+      // Omitting the optional argument exercises the default four-sample gate.
+      const passed = await runSamples('ps5', 'ps7', 'synthetic-root', d => records.push(d), runSample,
+        ...(legacyDiagnostics ? [true] : []));
+      assert.equal(passed, failed === -1);
+      assert.equal(peak, 1);
+      assert.deepEqual(calls, expected);
+      assert.deepEqual(records.filter(d => d.stage !== 'probe-close').map(d => d.stage), headers);
+      assert.deepEqual(records.filter(d => d.stage === 'probe-close'), failed !== -1 && throws ? [{ stage: 'probe-close', code: 'UNKNOWN' }] : []);
+      records.forEach(safe);
+    }
   }
+});
+
+test('direct observations require unique PID and exact terminated IO without debugger or module markers', () => {
+  const pid = 'claude-bridge-child-pid:1234\n', io = outputMarker('direct');
+  for (const first of ['stdout', 'stderr']) {
+    const records = [], observed = observations(d => records.push(d), () => 0, 'direct');
+    assert.equal(observed.complete(), false);
+    assert.deepEqual(observed.state(), {});
+    for (const stream of [first, first === 'stdout' ? 'stderr' : 'stdout']) {
+      for (const character of stream === 'stdout' ? io : pid) observed[stream](Buffer.from(character));
+      if (stream === first) assert.equal(observed.complete(), false);
+    }
+    assert.equal(observed.complete(), true);
+    assert.deepEqual(observed.state(), { childStarted: true, ready: true });
+    assert.deepEqual(records.map(d => d.stage).sort(), ['child-io', 'child-start']);
+    records.forEach(record => assert.ok(!safe(record).includes('1234')));
+  }
+  const badPids = ['', '0', '-1', '+1', '01', '1.5', '12345678901', ' 1234', '1234 ', SECRET];
+  const foreign = [...new Set([...phaseNames('supervisor'), ...phaseNames('import-json'), 'module-control-complete', 'child-io'])]
+    .filter(stage => stage !== 'child-start').map(stage => `ci-probe:${stage}\n`);
+  for (const extra of [...badPids.map(value => `claude-bridge-child-pid:${value}\n`), pid,
+    'claude-bridge-child-pid:5678\n', ...foreign]) {
+    const observed = observations(() => {}, () => 0, 'direct');
+    observed.stderr(Buffer.from(pid + extra)); observed.stdout(Buffer.from(io));
+    assert.equal(observed.complete(), false);
+  }
+  for (const text of ['', io + io, io.slice(0, -1), io + 'x', ' ' + io, io.replace('child-io', 'child-IO'),
+    'ci-probe:module-control-complete\n', pid, io + 'ci-probe:ps-start\n']) {
+    const observed = observations(() => {}, () => 0, 'direct');
+    observed.stderr(Buffer.from(pid)); observed.stdout(Buffer.from(text));
+    assert.equal(observed.complete(), false);
+  }
+});
+
+test('direct sample uses production File argv and exact synthetic Node payload and stdin', async () => {
+  const root = path.resolve('synthetic direct root ž'), calls = [], records = [];
+  assert.equal(await sample('mock-shell', root, d => records.push(d), 'direct', fakeSpawn((child, input) => {
+    assert.equal(input, 'CI_PROBE_INPUT\n');
+    child.stdout.emit('data', Buffer.from(outputMarker('direct')));
+    child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames('direct'))));
+    child.finish(0);
+  }, calls)), true);
+  assert.equal(calls.length, 1);
+  const { command, args, options } = calls[0];
+  assert.equal(command, 'mock-shell');
+  assert.deepEqual(args.slice(0, -1), ['-NoProfile', '-NonInteractive', '-File',
+    path.join(__dirname, '../lib/windows-job-runner.ps1'), '-LaunchBase64']);
+  const payload = JSON.parse(Buffer.from(args.at(-1), 'base64').toString('utf8'));
+  assert.equal(Buffer.from(JSON.stringify(payload)).toString('base64'), args.at(-1));
+  assert.deepEqual(Object.keys(payload).sort(), ['args', 'command', 'cwd', 'parentPid']);
+  assert.equal(payload.command, process.execPath);
+  assert.equal(payload.cwd, root);
+  assert.equal(payload.parentPid, process.pid);
+  assert.equal(payload.args.length, 2);
+  assert.equal(payload.args[0], '-e');
+  assert.deepEqual(options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(options.windowsHide, true);
+  assert.equal(options.cwd, root);
+  assert.equal(options.env.TEMP, root);
+  assert.equal(options.env.TMP, root);
+  // Execute only the fixed synthetic JS in-process, never spawn a shell or CLI.
+  for (const input of ['CI_PROBE_INPUT\n', '', 'CI_PROBE_INPUT', 'CI_PROBE_INPUT\r\n', 'CI_PROBE_INPUT\nextra', 'ž\n']) {
+    const stdout = [], stdin = new EventEmitter();
+    stdin.setEncoding = encoding => assert.equal(encoding, 'utf8');
+    const childProcess = { stdin, stdout: { write: text => stdout.push(text) } };
+    require('node:vm').runInNewContext(payload.args[1], { process: childProcess });
+    for (const character of input) stdin.emit('data', character);
+    stdin.emit('end');
+    assert.equal(childProcess.exitCode, input === 'CI_PROBE_INPUT\n' ? undefined : 3);
+    assert.deepEqual(stdout, input === 'CI_PROBE_INPUT\n' ? [outputMarker('direct')] : []);
+  }
+  assert.equal(records.at(-1).code, 'OK');
+  assert.equal(records.at(-1).exit, 0);
+  records.forEach(safe);
+});
+
+test('direct sample retains combined 64 KiB output bound and rejects null exit or synchronous spawn errors', async () => {
+  for (const size of [65536, 65537]) {
+    const records = [], pid = stderrPhases(phaseNames('direct')), io = outputMarker('direct');
+    const passed = await sample('mock-shell', 'synthetic-root', d => records.push(d), 'direct', fakeSpawn(child => {
+      child.stderr.emit('data', Buffer.from('x'.repeat(size - pid.length - io.length - 1) + '\n'));
+      child.stderr.emit('data', Buffer.from(pid));
+      child.stdout.emit('data', Buffer.from(io));
+      child.finish(0);
+    }));
+    assert.equal(passed, size === 65536);
+    assert.equal(records.at(-1).code, size === 65536 ? 'OK' : 'OUTPUT_LIMIT');
+    assert.equal(records.at(-1).oversized, size !== 65536);
+  }
+  const records = [];
+  assert.equal(await sample('mock-shell', 'synthetic-root', d => records.push(d), 'direct', fakeSpawn(child => {
+    child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames('direct'))));
+    child.stdout.emit('data', Buffer.from(outputMarker('direct'))); child.finish(null);
+  })), false);
+  assert.equal(records.at(-1).code, 'EXIT_NONZERO');
+  await assert.rejects(sample('mock-shell', 'synthetic-root', () => {}, 'direct', () => { throw new Error(SECRET); }));
+});
+
+test('probe CLI accepts only an absolute PS7 path and one trailing legacy flag before setup', async () => {
+  const ps7 = path.resolve('synthetic-shell', 'pwsh.exe');
+  assert.deepEqual(parseArgs(['--powershell7', ps7]), { ps7, legacyDiagnostics: false });
+  assert.deepEqual(parseArgs(['--powershell7', ps7, '--legacy-diagnostics']), { ps7, legacyDiagnostics: true });
+  for (const args of [[], ['--powershell7'], ['--powershell7', 'relative/pwsh.exe'], ['--powershell7', ''],
+    ['--powershell7', null], ['--powershell7', 7], ['--unknown', ps7], ['--legacy-diagnostics', '--powershell7', ps7],
+    ['--powershell7', ps7, '--unknown'], ['--powershell7', ps7, '--legacy-diagnostics', '--legacy-diagnostics'],
+    ['--powershell7', ps7, '--powershell7', ps7], ['--powershell7', ps7, '--legacy-diagnostics', 'extra'], null]) {
+    assert.equal(parseArgs(args), null);
+    const records = [];
+    assert.equal(await probe(args, d => records.push(d)), 1);
+    assert.deepEqual(records, [{ stage: 'probe-setup', code: 'INVALID_RESULT' }]);
+  }
+});
+
+test('production bootstrap and source pins fail closed before any shell selection', async t => {
+  const supervisor = path.join(__dirname, '../lib/windows-job-runner.ps1');
+  const source = (await fs.readFile(supervisor, 'utf8')).replace(/\r\n/g, '\n');
+  const sourceLines = source.split('\n');
+  assert.equal(sourceLines[2], 'try {');
+  assert.equal(sourceLines[3], "    Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop");
+  assert.equal(sourceLines[4], '    $launch = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($LaunchBase64)) | ConvertFrom-Json');
+  assert.equal(sourceLines[5], "    Add-Type -Path ([IO.Path]::Combine($PSScriptRoot, 'windows-job-runner.cs'))");
+  assert.equal(sourceLines[6], '    [ClaudeBridgeJobRunner]::Run([string]$launch.command, [string[]]$launch.args, [string]$launch.cwd, [int]$launch.parentPid)');
+  assert.equal(sourceLines.slice(7).join('\n'), "    exit 0\n} catch {\n    [Console]::Error.WriteLine('Claude job supervisor failed: ' + $_.Exception.Message)\n    exit 1\n}\n");
+  const readFile = fs.readFile;
+  try {
+    for (const changed of [null, 'windows-job-runner.ps1', 'windows-job-runner.cs']) {
+      const read = t.mock.method(fs, 'readFile', async (file, ...args) => {
+        const value = (await readFile(file, ...args)).replace(/\r\n/g, '\n');
+        return path.basename(file) === changed ? value + '# source mismatch\n' : value.replace(/\n/g, '\r\n');
+      });
+      assert.equal(await inspectSources(), changed === null);
+      if (changed && process.platform === 'win32') {
+        const records = [];
+        assert.equal(await probe(['--powershell7', path.resolve('synthetic-shell', 'pwsh.exe')], d => records.push(d)), 1);
+        assert.deepEqual(records, [{ stage: 'probe-setup', code: 'SOURCE_MISMATCH' }]);
+      }
+      read.mock.restore();
+    }
+    // A missing selected executable fails before scratch creation or spawning.
+    if (process.platform === 'win32') {
+      t.mock.method(fs, 'stat', async () => { throw new Error(SECRET); });
+      const records = [];
+      assert.equal(await probe(['--powershell7', path.resolve('synthetic-shell', 'pwsh.exe')], d => records.push(d)), 1);
+      assert.deepEqual(records, [{ stage: 'probe-setup', code: 'UNKNOWN' }]);
+    }
+  } finally { t.mock.restoreAll(); }
 });
 
 test('module and breakpoint scripts retain bounded fixed instrumentation and shell-owned import', async () => {
   const wrapper = await fs.readFile(path.join(__dirname, 'ci-supervisor-probe.ps1'), 'utf8');
-  const order = ["Set-PSBreakpoint -Script $Supervisor -Line 5", "ci-probe:breakpoint-5-set",
-    "Set-PSBreakpoint -Script $Supervisor -Line 6", "ci-probe:breakpoint-6-set", "ci-probe:supervisor-call", '& $Supervisor -LaunchBase64 $LaunchBase64'];
+  assert.ok(!/Import-Module|PSModulePath|ExecutionPolicy/i.test(wrapper));
+  assert.equal((wrapper.match(/Set-PSBreakpoint/g) || []).length, 2);
+  assert.equal(diagnostic('breakpoint-5-set').stage, 'unknown');
+  assert.equal(diagnostic('breakpoint-6-set').stage, 'breakpoint-6-set');
+  assert.equal(diagnostic('breakpoint-7-set').stage, 'breakpoint-7-set');
+  const order = ["Set-PSBreakpoint -Script $Supervisor -Line 6", "ci-probe:breakpoint-6-set",
+    "Set-PSBreakpoint -Script $Supervisor -Line 7", "ci-probe:breakpoint-7-set", "ci-probe:supervisor-call", '& $Supervisor -LaunchBase64 $LaunchBase64'];
   for (let i = 1; i < order.length; i++) assert.ok(wrapper.indexOf(order[i]) > wrapper.indexOf(order[i - 1]));
   const control = await fs.readFile(path.join(__dirname, 'ci-module-control.ps1'), 'utf8');
   assert.ok(control.includes("[ValidateSet('json', 'import-json')]"));

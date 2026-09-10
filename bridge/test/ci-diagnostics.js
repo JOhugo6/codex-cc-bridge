@@ -3,7 +3,8 @@
 // TEST ONLY. No arbitrary error/child text crosses this diagnostic boundary.
 const STAGES = new Set(['unknown', 'fixture', 'cleanup', 'native-version', 'native-help',
   'probe-setup', 'probe-ps5-first', 'probe-ps5-repeat', 'probe-ps7-first', 'probe-ps7-repeat',
-  'ps-start', 'breakpoint-5-set', 'breakpoint-6-set', 'supervisor-call', 'add-type-start', 'add-type-complete',
+  'direct-ps5-first', 'direct-ps5-repeat', 'direct-ps7-first', 'direct-ps7-repeat',
+  'ps-start', 'breakpoint-6-set', 'breakpoint-7-set', 'supervisor-call', 'add-type-start', 'add-type-complete',
   'child-start', 'child-io', 'probe-close', 'control-ps5-json', 'control-ps5-import-json',
   'module-ps-start', 'module-import-start', 'module-import-complete', 'json-start', 'json-complete', 'module-control-complete']);
 const CODES = new Set(['OK', 'UNKNOWN', 'SPAWN_FAILED', 'TIMEOUT', 'OUTPUT_LIMIT', 'EXIT_NONZERO',
