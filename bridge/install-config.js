@@ -50,7 +50,10 @@ function key(file) {
     if (parent === current) break;
     suffix.unshift(path.basename(current)); current = parent;
   }
-  const full = path.join(fs.realpathSync(current), ...suffix);
+  // The JS realpath implementation preserves Windows 8.3 components (RUNNER~1
+  // in hosted-runner TEMP), while process.cwd() expands them. Native realpath
+  // resolves both spellings to the same path, including junction ancestors.
+  const full = path.join(fs.realpathSync.native(current), ...suffix);
   return process.platform === 'win32' ? full.toLowerCase() : full;
 }
 

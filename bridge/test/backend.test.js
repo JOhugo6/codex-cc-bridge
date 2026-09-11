@@ -8,7 +8,9 @@ const { spawn } = require('node:child_process');
 const { ClaudeBackend, parseResult } = require('../lib/claude-backend');
 const { fixture, TestBackend } = require('./helpers');
 
-function setup(settings, mode = 'normal', timeoutMs = 15000) {
+// Functional IO assertions must allow hosted Windows cold supervisor startup.
+// Tests of timeout/cancellation keep their explicit, shorter deadlines below.
+function setup(settings, mode = 'normal', timeoutMs = 60000) {
   return new TestBackend({ ...settings, timeoutMs }, mode);
 }
 const input = cwd => ({ sessionId: randomUUID(), resume: false, message: 'x', cwd, model: 'claude-opus-5[1m]', permissionMode: 'dontAsk', allowedTools: [] });

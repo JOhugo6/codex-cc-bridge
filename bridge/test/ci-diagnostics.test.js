@@ -553,22 +553,51 @@ test('mocked sample checks child exits and protocol instead of treating module o
   }
 });
 
-test('mocked samples in every mode keep the existing 15-second bound', async t => {
+test('mocked samples in every mode retain a finite 60-second cold-start bound', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   try {
     for (const mode of ['direct', 'supervisor', 'json', 'import-json']) {
       const records = [];
-      let settled = false;
+      let settled = false, kills = 0;
       const pending = sample('mock-shell', path.resolve('synthetic-module-control'), d => records.push(d), mode,
-        fakeSpawn(() => {})).then(value => { settled = true; return value; });
-      t.mock.timers.tick(14999);
+        fakeSpawn(child => {
+          const kill = child.kill;
+          child.kill = () => { kills++; return kill(); };
+        })).then(value => { settled = true; return value; });
+      await Promise.resolve();
+      t.mock.timers.tick(59999);
       assert.equal(settled, false);
+      assert.equal(kills, 0);
       assert.equal(records.length, 0);
       t.mock.timers.tick(1);
       assert.equal(await pending, false);
+      assert.equal(kills, 1);
       assert.equal(records.at(-1).code, 'TIMEOUT');
       assert.equal(records.at(-1).timedOut, true);
       assert.ok(!('ready' in records.at(-1)) && !('childStarted' in records.at(-1)));
+    }
+  } finally { t.mock.timers.reset(); }
+});
+
+test('cold samples can complete after 15 seconds without retries or relaxing their protocol', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    for (const mode of ['direct', 'supervisor', 'json', 'import-json']) {
+      const records = [], calls = [];
+      let child;
+      const pending = sample('mock-shell', path.resolve('synthetic-cold-start'), d => records.push(d), mode,
+        fakeSpawn(value => { child = value; }, calls));
+      await Promise.resolve();
+      t.mock.timers.tick(45000);
+      assert.equal(records.length, 0);
+      child.stderr.emit('data', Buffer.from(stderrPhases(phaseNames(mode))));
+      child.stdout.emit('data', Buffer.from(outputMarker(mode)));
+      child.finish(0);
+      assert.equal(await pending, true);
+      assert.equal(calls.length, 1);
+      assert.equal(records.at(-1).code, 'OK');
+      assert.equal(records.at(-1).timedOut, false);
+      records.forEach(safe);
     }
   } finally { t.mock.timers.reset(); }
 });

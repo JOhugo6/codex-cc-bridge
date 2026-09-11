@@ -30,7 +30,14 @@ write(path.join(isolatedHelpers, 'install-config.js'), snapshots['bridge/install
 for (const [file, bytes] of Object.entries(nativeSnapshots)) write(path.join(isolatedHelpers, 'lib', file), bytes);
 write(path.join(isolatedHelpers, 'lib', 'config.js'), configStub);
 const { prepareOptions, codexParts, replaceCodex, expectedCodexWrite } = require(path.join(isolatedHelpers, 'install-config.js'));
-test.after(() => fs.rmSync(isolatedHelpers, { recursive: true, force: true }));
+test.after(() => removeFixture(isolatedHelpers));
+
+function removeFixture(directory) {
+  // Windows may retain an executable's delete-pending directory briefly after
+  // the synchronous child exits. Bound retries; never suppress a final error.
+  fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  assert.equal(fs.existsSync(directory), false, 'Fixture directory must be removed');
+}
 
 function write(file, contents) {
   fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, contents);
@@ -64,7 +71,7 @@ function buildLauncher() {
 
 test.after(() => {
   if (buildRoot) {
-    fs.rmSync(buildRoot, { recursive: true, force: true });
+    removeFixture(buildRoot);
     assert.equal(fs.existsSync(buildRoot), false, 'Private executable seed must be removed');
   }
 });
@@ -73,7 +80,7 @@ function pc(t, label = 'PC-A', { codex = true, parentRoot = false, binName = 'Pr
   buildLauncher();
   const base = fs.mkdtempSync(path.join(os.tmpdir(), `bridge-installer-${label}-`));
   t.after(() => {
-    fs.rmSync(base, { recursive: true, force: true });
+    removeFixture(base);
     assert.equal(fs.existsSync(base), false, 'Fixture files must be removed after all children finish');
   });
   const home = path.join(base, `${label} Home žluťoučký 日本`);
@@ -130,6 +137,7 @@ function invoke(fixture, shell, parameters = {}) {
     cwd: fixture.cwd, env: fixture.env, encoding: 'utf8', timeout: 90000, windowsHide: true,
   });
   const output = (result.stdout || '') + (result.stderr || '');
+  assert.ifError(result.error);
   assert.ok(!output.includes('SYNTHETIC_SECRET_DO_NOT_LOG'), `Raw external output escaped: ${output}`);
   if (fs.existsSync(report)) assert.deepEqual(load(report), { same: true, encodingSame: true });
   return { ...result, output };
@@ -299,9 +307,9 @@ for (const shell of shells) {
         assert.equal(report.version, process.version); assert.equal(report.exe, executable);
         assert.equal(report.child.version, process.version); assert.equal(report.child.exe, executable);
         assert.throws(() => process.kill(report.child.pid, 0), { code: 'ESRCH' }, 'Grandchild must have exited before fixture deletion');
-        // No EPERM suppression or retry: delete while the original test runner
-        // still lives, and before running the second fixture sharing this seed.
-        fs.rmSync(f.base, { recursive: true, force: true });
+        // Delete while the original test runner still lives, and before running
+        // the second fixture sharing this seed. Permanent locks remain errors.
+        removeFixture(f.base);
         assert.equal(fs.existsSync(f.base), false);
       }
     });
@@ -431,6 +439,30 @@ for (const shell of shells) {
         else { const cfg = load(f.claudeConfig); cfg.projects = { [f.cwd]: { mcpServers: { claude_bridge: { command: 'local-server' } } } }; write(f.claudeConfig, JSON.stringify(cfg)); }
         failure(invoke(f, shell, { Target: 'Claude' }), 'INSTALL_CLAUDE_SCOPE_COLLISION'); assert.deepEqual(f.calls(), []); preserved(f);
       }
+    });
+    await t.test('local scope recognizes short-path and junction aliases without rejecting sibling projects', t => {
+      const f = pc(t, 'scope-alias');
+      const script = `(New-Object -ComObject Scripting.FileSystemObject).GetFolder(${quote(f.cwd)}).ShortPath`;
+      const shortResult = spawnSync(ps5, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+      assert.ifError(shortResult.error); assert.equal(shortResult.status, 0, shortResult.stderr);
+      const shortPath = shortResult.stdout.trim();
+      assert.equal(fs.realpathSync.native(shortPath), fs.realpathSync.native(f.cwd));
+      const alias = path.join(f.base, 'project-junction');
+      fs.symlinkSync(f.cwd, alias, 'junction');
+      const cfg = load(f.claudeConfig);
+      for (const directory of [shortPath, alias]) {
+        cfg.projects = { [directory]: { mcpServers: { claude_bridge: { command: 'local-server' } } } };
+        write(f.claudeConfig, JSON.stringify(cfg));
+        const before = fs.readFileSync(f.claudeConfig);
+        failure(invoke(f, shell, { Target: 'Claude' }), 'INSTALL_CLAUDE_SCOPE_COLLISION');
+        assert.deepEqual(fs.readFileSync(f.claudeConfig), before);
+        assert.deepEqual(f.calls(), []); assert.equal(fs.existsSync(f.destination), false);
+      }
+      // A missing sibling shares a string prefix but is not this project.
+      cfg.projects = { [`${f.cwd}-sibling`]: { mcpServers: { claude_bridge: { command: 'sibling-server' } } } };
+      write(f.claudeConfig, JSON.stringify(cfg));
+      success(invoke(f, shell, { Target: 'Claude' }));
+      preserved(f);
     });
     await t.test('unknown skill is not overwritten and Codex foreign/quoted registrations fail closed', t => {
       const f = pc(t); write(f.skills(), 'private user skill'); failure(invoke(f, shell, { Target: 'Claude' }), 'INSTALL_SKILL_COLLISION'); assert.equal(fs.readFileSync(f.skills(), 'utf8'), 'private user skill');

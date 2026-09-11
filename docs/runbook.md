@@ -283,6 +283,31 @@ suite během B4 změn nespouští. Historická evidence zůstává zachovaná; �
 ignorování cleanup chyby nebo retry-to-green. Tento infrastrukturní problém je
 oddělený od nevyřešené native reliability 47.
 
+### CI selhání 34465086190: cesty, úklid a časování
+
+[Běh 34465086190](https://github.com/JOhugo6/codex-cc-bridge/actions/runs/34465086190)
+na commitu `2e76009` měl zelené native suites, ale selhal v instalátoru na obou
+verzích Node. Neodhalenou kolizi lokální registrace způsobovalo rozdílné vyhodnocení krátké
+cesty Windows (`RUNNER~1`) a jejího plného názvu. Instalátor nyní používá
+`fs.realpathSync.native`; regression testy pokrývají krátké cesty, junction aliasy,
+zachování cizí registrace i odlišný sousední projekt.
+
+Úklid syntetických profilů má omezené opakování při dočasném zamčení souboru
+(nejvýše pět opakování se základní prodlevou 100 ms). Trvalá chyba nebo zbylé
+soubory stále znamenají selhání. Chyba `spawnSync`, včetně timeoutu, se vypíše jako
+chyba spuštění a neinterpretuje se jako očekávané odmítnutí konfigurace.
+
+[Běh 34563175266](https://github.com/JOhugo6/codex-cc-bridge/actions/runs/34563175266)
+navíc doložil překročení 15s limitu při prvním startu syntetického backendu a
+PowerShell timing probe. Funkční testy backendu a tato diagnostika mají nyní
+60s limit; měřené časy zůstávají viditelné a timeout stále selže. Testy záměrného
+timeoutu, zrušení a zániku rodiče i produkční limity se nemění.
+
+Pravděpodobný 90s timeout instalátoru a výrazné zpomalení PowerShellu 5.1 z původního
+běhu nebyly lokálně reprodukovány. Jejich příčina zůstává neověřená; limit
+instalátoru nebyl zvýšen. Lokální testy ani tato oprava nejsou důkazem zeleného
+hosted CI běhu nového commitu.
+
 <a id="native-ci-provisioning"></a>
 ### Pinovaný native CI provisioning
 

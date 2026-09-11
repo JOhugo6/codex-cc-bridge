@@ -9,7 +9,10 @@ const { createHash } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
 const { diagnostic, emit, lines } = require('./ci-diagnostics');
-const DEADLINE_MS = 15000;
+// Hosted Windows cold starts have exceeded 15 seconds before synthetic child
+// readiness. This diagnostic tests eventual IO, not a production latency SLA.
+// Keep a finite deadline and require every sample; do not retry failed samples.
+const DEADLINE_MS = 60000;
 const SUPERVISOR = path.join(__dirname, '../lib/windows-job-runner.ps1');
 const PINS = {
   'windows-job-runner.ps1': 'e86726017dc70c667b1189f8d9ad0405fec0b8cbb4f66d458f851a33a36f97f7',
