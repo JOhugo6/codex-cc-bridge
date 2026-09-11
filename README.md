@@ -9,7 +9,7 @@ nativní Claude session. Nejde o rodičovský nástroj **Agent**, `spawn_agent` 
 Agent Teams; změna provideru rodiče nezmění jeho nativní agenty na Anthropic.
 
 Cesta je rodič → skill/MCP nástroj → lokální Node server → hlídaný `claude.exe`
-→ uložené osobní first-party přihlášení. Text jde přes UTF-8 stdin, první tah
+→ uložené first-party přihlášení. Text jde přes UTF-8 stdin, první tah
 použije `--session-id`, další `--resume`. V dítěti jsou vypnuté hooks a zděděné
 MCP servery; běžné projektové instrukce, settings a permissions zůstávají.
 
@@ -26,10 +26,11 @@ Podrobnosti v [runbooku](docs/runbook.md#reliability-47).
   z .NET Frameworku.
 - Skutečný nativní **Claude Code > 2.1.263**, při instalaci `claude.exe` v PATH.
   Verze se porovnávají číselně; starší verze, 2.1.263 a prerelease se odmítají.
-  Novější verze musí projít i kontrolou CLI a osobního profilu. Shellové shimy
+  Novější verze musí projít i kontrolou CLI, přihlášení a politik účtu. Shellové shimy
   a nativní inference mimo Windows nejsou podporované.
-- Existující **uložené osobní Pro/Max first-party claude.ai přihlášení** na daném PC.
-  Gateway, Team/Enterprise, neznámé typy účtů, API key a OAuth předané prostředím
+- Existující **uložené Pro/Max nebo Team first-party claude.ai přihlášení** na daném PC.
+  Team používá stejné přihlášení jako Claude a musí projít kontrolou organizačních
+  politik. Gateway, Enterprise, neznámé typy účtů, API key a OAuth předané prostředím
   nejsou podporované. Bridge adaptér credentials nečte ani nekopíruje.
 - Codex CLI jen pro registraci `-Target Codex` / `Both`. Pro `-Target Claude`
   a `-SkipRegister` není potřeba.

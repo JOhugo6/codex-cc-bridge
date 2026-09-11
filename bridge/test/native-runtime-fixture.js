@@ -59,7 +59,7 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
   const reads = [], stats = [], calls = [];
   const registered = emptyRegistry();
   let account = { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', subscriptionType: tier, email: EMAIL, orgId: 'synthetic-org' };
-  let beforeExecute;
+  let beforeExecute, doctorOutput, doctorStderr = '';
   // Reject any accidental real config/credential read, including through a future adapter change.
   function allowed(file) {
     const p = path.resolve(file);
@@ -85,7 +85,12 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
       stats.push(p); return syncFs.lstatSync(p);
     },
     readdirSync(p) { allowed(p); return syncFs.readdirSync(p); },
-    readFileSync() { assert.fail('synchronous validation must never read file contents'); },
+    readFileSync(p, encoding) {
+      allowed(p);
+      assert.equal(path.basename(p), 'policy-limits.json', 'only policy-limits cache content may be read synchronously');
+      reads.push(path.resolve(p));
+      return syncFs.readFileSync(p, encoding);
+    },
   };
   const deps = { ...api.private.production, fs: checkedFs, syncFs: checkedSyncFs, platform: 'win32', homedir: () => root,
     ancestorBoundary: root, descriptorRoot: path.join(root, 'descriptor-fallback'), systemRoots: () => [managed],
@@ -97,7 +102,8 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
       if (native) return api.private.production.execute(command, args, options);
       if (args.includes('--version')) return { stdout: '2.1.264 (Claude Code)\n', stderr: '' };
       if (args.includes('--help')) return { stdout: api.private.FLAGS.join(' '), stderr: '' };
-      if (args.includes('doctor')) return { stdout: 'Managed settings (remote): not fetched — requires an Enterprise or Team subscription\nOrganization policy: not applicable to Pro and Max accounts\n', stderr: '' };
+      if (args.includes('doctor')) return { stdout: doctorOutput === undefined
+        ? 'Managed settings (remote): not fetched — requires an Enterprise or Team subscription\nOrganization policy: not applicable to Pro and Max accounts\n' : doctorOutput, stderr: doctorStderr };
       return { stdout: JSON.stringify(account), stderr: '' };
     },
   };
@@ -152,6 +158,8 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
   return { root, config, project, appdata, managed, globalFile, executable, parentEnv, api, deps, reads, stats, calls, registered,
     json, text, login, base, runPrepared,
     get account() { return account; }, set account(value) { account = value; },
+    set doctorOutput(value) { doctorOutput = value; },
+    set doctorStderr(value) { doctorStderr = value; },
     set beforeExecute(value) { beforeExecute = value; },
     runtime(overrides = {}) {
       return api.private.createRuntime({ executable, parentEnv, ...(defaultRoot ? {} : { configRoot: config }), ...overrides }, deps);

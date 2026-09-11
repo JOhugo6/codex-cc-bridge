@@ -79,10 +79,10 @@ test('native default root keeps home .claude.json login/trust identity; explicit
   assert.notEqual(explicit.identity.accountFingerprint, p.identity.accountFingerprint);
 }, { defaultRoot: true, tier: 'pro' }));
 
-test('native team and cached gateway alongside Max reject without inference', timeout, async () => native(async f => {
+test('native Team without policy evidence and cached gateway alongside Max reject without inference', timeout, async () => native(async f => {
   for (const scenario of ['team', 'gateway']) {
     await f.login(scenario === 'team' ? 'team' : 'max', scenario === 'gateway');
-    await assert.rejects(f.runtime().preflight({ cwd: f.project }), reject('NATIVE_AUTH'));
+    await assert.rejects(f.runtime().preflight({ cwd: f.project }), reject(scenario === 'team' ? 'NATIVE_POLICY' : 'NATIVE_AUTH'));
     assert.equal(inference(f).length, 0);
   }
 }));

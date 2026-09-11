@@ -10,7 +10,7 @@ Agent tool, `spawn_agent`, or Agent Teams; changing a parent provider does not
 turn its native agents into Anthropic agents.
 
 The path is parent → skill/MCP tool → local Node server → supervised native
-`claude.exe` → saved personal first-party login. The child receives task text on
+`claude.exe` → saved first-party login. The child receives task text on
 UTF-8 stdin, uses `--session-id` first and `--resume` afterward, and has no inherited
 MCP servers or hooks. Normal project instructions, settings and permissions remain.
 
@@ -27,10 +27,11 @@ review/testing. See [the runbook](docs/runbook.md#reliability-47).
   and the .NET Framework C# compiler.
 - Actual native **Claude Code > 2.1.263**, `claude.exe` on PATH for installation.
   Versions are compared numerically; older versions, 2.1.263 and prereleases are rejected.
-  Newer versions must also pass CLI and personal-profile checks. Shell shims
+  Newer versions must also pass CLI, saved-login, and account-policy checks. Shell shims
   and non-Windows native inference are unsupported.
-- An existing **saved personal Pro or Max, first-party claude.ai login** on this PC.
-  Gateway, Team/Enterprise, unknown account types, API-key and environment-OAuth
+- An existing **saved Pro, Max, or Team first-party claude.ai login** on this PC.
+  Team uses the existing Claude login and must pass organization-policy checks.
+  Gateway, Enterprise, unknown account types, API-key and environment-OAuth
   routing are unsupported. No credentials are copied or read by the bridge adapter.
 - Codex CLI only for registration with `-Target Codex` or `-Target Both`.
   `-Target Claude` and `-SkipRegister` do not require Codex.

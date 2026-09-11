@@ -20,7 +20,7 @@ transportu. Nespouští auth/preflight/model ani nevytváří konverzaci. Chybn�
 neprojdou jen proto, že existují správné názvy nástrojů.
 
 `--native` používá stejnou zmrazenou validaci jako runtime: zdroje settings,
-verze/help, saved-login auth metadata, personal-policy eligibility a stabilita
+verze/help, saved-login auth metadata, validace politik účtu a stabilita
 zdrojů. Nativní metadata subprocess má limit 18 s a společný limit stdout/stderr
 256 KiB; několik příkazů znamená delší celkový čas. Nevolá launch ani další recheck,
 neukládá pending a neposílá zadání. Výstup je omezený na kódy, kanonický model,
@@ -105,8 +105,9 @@ odmítne. Žádný automatický provider/model fallback. `[1m]` je context selec
 strukturované usage může uvést základní `claude-opus-5`.
 
 Routing se izoluje jen v dítěti: rodičovské prostředí se nemění. Nativní CLI
-používá uložené osobní Pro/Max first-party přihlášení, ne přenesené OAuth/API env.
-Gateway (i vedle uloženého Max), Team/Enterprise/unknown účty a neověřitelné
+používá uložené Pro/Max nebo Team first-party přihlášení, ne přenesené OAuth/API env.
+Team používá stávající přihlášení a respektuje ověřené organizační politiky.
+Gateway (i vedle uloženého Max), Enterprise/unknown účty a neověřitelné
 managed routing zdroje se odmítají, nikoli obcházejí. Ne-NFC filesystem profily,
 root konflikty a nepodporovaná nepřímá cesta jsou nepodporované. Bridge adaptér
 credential-bearing soubory neparsuje, pouze kontroluje jejich metadata.
@@ -119,6 +120,37 @@ pravidlo může změnit výsledek. Kontroluj `permission_denials`, nevynucuj ús
 eskalací oprávnění. Nejde o OS sandbox ani globální atomickou policy garanci po
 odeslání úlohy. Native transcripty zůstávají lokálně.
 
+## Team přihlášení a organizační politiky
+
+Team používá uložené `claude.ai` přihlášení ve zvoleném nativním profilu. Bridge
+nevyžaduje další login a nekopíruje tokeny. Typ účtu a identita organizace se
+ověřují přes nativní `auth status`; Enterprise a neznámé typy se dál odmítají.
+
+Před úlohou musí nativní diagnostika potvrdit načtené remote settings i organizační
+policy. Bridge současně vyžaduje čerstvé potvrzení `304 Not Modified` pro obě
+existující cache, validuje jejich obsah a kontroluje jejich neměnnost. Nativní
+obnovení času souboru `policy-limits.json` při odpovědi 304 je přípustné, pouze
+pokud zůstane zachovaná identita, velikost a hash obsahu souboru. Pouhé
+`Loaded`, rozpracované načítání ani stará lokální cache tuto kontrolu nesplňují.
+Diagnostické debug výstupy zůstávají interní a omezené velikostí; veřejný výstup
+neobsahuje jejich text, tokeny ani obsah organizačních pravidel.
+
+Nativní Team doctor také zapisuje do `.claude.json`. Bridge před jeho spuštěním
+ověří původní stav, po dokončení znovu ověří stejný účet a organizaci a ustálí
+nový otisk globálního souboru. Credential-bearing obsah nečte. Ostatní zdroje
+musí stále odpovídat původnímu otisku. Tato tolerance je omezena na metadata okno;
+bez čtení obsahu nelze prokázat, že během něj nezapsal do `.claude.json` i jiný proces.
+
+Kontrola politik se opakuje těsně před spuštěním. Neznámé nebo konfliktní routing,
+auth a dynamické policy položky skončí odmítnutím před odesláním zadání. Podporovaná
+omezení zůstávají v nativních zdrojích a uplatňuje je Claude; bridge je nepřepisuje
+kopií do běžných uživatelských settings.
+
+Jde o ověření aktuálního stavu politik, nikoli o zmrazení serveru. Nový task proces
+může po kontrole načíst novější organizační politiku a Claude ji uplatní, včetně
+změn, které neuloží do cache. Bridge nezajišťuje atomické propojení serverové
+kontroly se startem task procesu.
+
 ## Native chyby před spuštěním
 
 | Kód | Bezpečný další postup |
@@ -128,7 +160,7 @@ odeslání úlohy. Native transcripty zůstávají lokálně.
 | `NATIVE_ROOT`, `NATIVE_INPUT` | Ověř absolutní existující root/cwd/executable, NFC a shodný home. Neopravuj namespace normalizací. |
 | `NATIVE_SOURCE` | Zkontroluj podporovanost/čitelnost settings, bez zveřejňování jejich obsahu. |
 | `NATIVE_CONFLICT`, `NATIVE_POLICY` | Routing/policy není doložená; neodstraňuj managed policy a nezaváděj bypass. |
-| `NATIVE_AUTH` | Chybí podporovaná saved personal first-party metadata. Případné legitimní přihlášení je oddělený operátorský krok. |
+| `NATIVE_AUTH` | Chybí podporovaná saved first-party metadata účtu Pro, Max nebo Team. Případné legitimní přihlášení je oddělený operátorský krok. |
 | `NATIVE_DIAGNOSTIC` | Metadata subprocess selhal nebo překročil limit; uchovej sanitizované důkazy, ne raw auth výstup. |
 | `NATIVE_DRIFT` | Změna zdrojů/identity před submission; viz reliability 47. Žádné retry-until-green. |
 
@@ -138,7 +170,7 @@ Explicitní model bridge má přednost před osobním defaultem a dítě použí
 `--strict-mcp-config`. Osobní cache `remote-settings.json` / `policy-limits.json`
 se kontrolují podle úzkého schématu a zůstávají součástí kontroly změn před spuštěním;
 jejich pouhá přítomnost už nezpůsobuje `NATIVE_CONFLICT`. Neznámé policy/routing
-položky se dál odmítají. Účet Team/Enterprise nadále vrací `NATIVE_AUTH`.
+položky se dál odmítají. Nepodporovaný účet Enterprise nadále vrací `NATIVE_AUTH`.
 
 `CLAUDE_AUTH_FAILED` (například native 401) po zahájení úlohy už není totéž co
 preflight chyba. Neprováděj automatický login/refresh ani znovuodeslání. Nejprve

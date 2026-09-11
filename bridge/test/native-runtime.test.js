@@ -325,7 +325,7 @@ test('malformed, unreadable, oversized and nonregular files are not mistaken for
   assert.equal(f.calls.length, 0);
 }));
 
-test('personal metadata predicates reject gateway coexistence, team, unknown, env OAuth and API key', async () => withFixture(async f => {
+test('personal metadata predicates reject gateway coexistence, enterprise, unknown, env OAuth and API key', async () => withFixture(async f => {
   const saved = { ...f.account };
   for (const subscriptionType of ['pro', 'max']) {
     f.account = { ...saved, subscriptionType };
@@ -333,7 +333,7 @@ test('personal metadata predicates reject gateway coexistence, team, unknown, en
     assert.match(p.identity.accountFingerprint, /^[a-f0-9]{64}$/);
     assert.ok(!JSON.stringify(p).includes('runtime-synthetic@'));
   }
-  for (const patch of [{ apiProvider: 'gateway', authMethod: 'third_party' }, { subscriptionType: 'team' },
+  for (const patch of [{ apiProvider: 'gateway', authMethod: 'third_party' },
     { subscriptionType: 'enterprise' }, { subscriptionType: null }, { authMethod: 'oauth_token' },
     { authMethod: 'api_key' }, { loggedIn: false }, { email: null, orgId: null }]) {
     f.account = { ...saved, ...patch };

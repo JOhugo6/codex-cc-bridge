@@ -12,6 +12,7 @@ const { fail } = require('./config');
 const { isSupportedVersion, parseVersionOutput } = require('./native-version');
 
 const RUNTIME_CONTRACT = 'native-windows-personal/2.1.263/v1';
+const TEAM_RUNTIME_CONTRACT = 'native-windows-team/304-policy-snapshot/v1';
 const FIRST_PARTY = 'https://api.anthropic.com';
 // Only IDs exercised by this contract are admitted. Expansion requires native tests.
 const MODEL_CATALOG = Object.freeze({ opus: 'claude-opus-5[1m]', 'opus[1m]': 'claude-opus-5[1m]',
@@ -30,8 +31,8 @@ const error = code => fail(code, {
   NATIVE_ROOT: 'Native profile root is unsupported. Preserve the standard root or explicitly select an existing native profile.',
   NATIVE_PLATFORM: 'This native runtime contract supports Windows only.',
   NATIVE_COMPATIBILITY: 'Native executable requires Claude Code newer than 2.1.263 and the supported runtime flags.',
-  NATIVE_AUTH: 'An ordinary saved first-party Pro or Max login is required; gateway, environment, and organization logins are unsupported.',
-  NATIVE_POLICY: 'Native personal-account policy eligibility could not be established. No task submitted.',
+  NATIVE_AUTH: 'A saved first-party Pro, Max, or Team login is required; gateway and environment logins are unsupported.',
+  NATIVE_POLICY: 'Native account policy eligibility or a fresh Team policy snapshot could not be established. No task submitted.',
   NATIVE_DIAGNOSTIC: 'Native metadata command failed or exceeded its bounds. No task submitted.',
   NATIVE_DRIFT: 'Native sources or profile identity changed before submission. Run preflight again.',
 }[code] || 'Native runtime validation failed.');
@@ -180,8 +181,10 @@ function validateSettings(value, { managed = false } = {}) {
 function validatePersonalCache(value, kind) {
   if (!object(value)) throw error('NATIVE_SOURCE');
   if (kind === 'remote-settings.json') {
-    if (Object.keys(value).some(k => k !== 'channelsEnabled')) throw error('NATIVE_CONFLICT');
-    if (typeof value.channelsEnabled !== 'boolean') throw error('NATIVE_CONFLICT');
+    const { channelsEnabled, ...managed } = value;
+    if (channelsEnabled !== undefined && typeof channelsEnabled !== 'boolean') throw error('NATIVE_CONFLICT');
+    validateSettings(managed, { managed: true });
+    if (!Object.keys(value).length) throw error('NATIVE_CONFLICT');
     return;
   }
   if (Object.keys(value).some(k => !['restrictions', 'compliance_taints', 'monitoring_notice', 'defaults'].includes(k))
@@ -211,6 +214,7 @@ function parseSettings(text, managed, mcp = false, cache) {
 }
 
 function statStamp(s) { return [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs].join(':'); }
+function cacheStamp(s) { return [s.dev, s.ino, s.mode, s.size].join(':'); }
 
 // Both registry views and both hives are inspected, including lower-priority values:
 // native merges env from admin sources even when another source wins the policy tier.
@@ -265,8 +269,18 @@ const production = { fs, syncFs, platform: process.platform, homedir: os.homedir
 // Ancestor identity (not timestamps) detects directory/junction substitution without
 // treating normal native cache creation in a profile directory as policy drift.
 function createSourceLedger(deps) {
-  const sources = new Map(), ancestors = new Map(), inventories = new Map();
-  const stamp = s => s ? [s.mode, s.isSymbolicLink(), statStamp(s)].join(':') : 'absent';
+  const sources = new Map(), ancestors = new Map(), inventories = new Map(), touchedCaches = new Set();
+  const stamp = (s, file) => {
+    if (!s) return 'absent';
+    if (!touchedCaches.has(file)) return [s.mode, s.isSymbolicLink(), statStamp(s)].join(':');
+    // Native refreshes this cache's timestamps on every successful HTTP 304.
+    // Keep identity, type, mode, size AND bytes exact while permitting that touch.
+    if (!s.isFile() || s.isSymbolicLink() || s.size > LIMIT) throw error('NATIVE_SOURCE');
+    let bytes;
+    try { bytes = deps.syncFs.readFileSync(file); } catch { throw error('NATIVE_SOURCE'); }
+    if (bytes.length > LIMIT) throw error('NATIVE_SOURCE');
+    return [s.mode, cacheStamp(s), hash(bytes)].join(':');
+  };
   const directoryStamp = s => {
     if (!s) return 'absent';
     if (!s.isDirectory() || s.isSymbolicLink()) throw error('NATIVE_SOURCE');
@@ -284,8 +298,9 @@ function createSourceLedger(deps) {
         if (dir === path.dirname(dir)) break;
       }
     },
-    record(file, value) {
-      const current = stamp(value);
+    record(file, value, nativeTouch = false) {
+      if (nativeTouch) touchedCaches.add(file);
+      const current = stamp(value, file);
       if (sources.has(file) && sources.get(file) !== current) throw error('NATIVE_DRIFT');
       sources.set(file, current);
     },
@@ -296,7 +311,7 @@ function createSourceLedger(deps) {
         if (directoryStamp(stat(dir)) !== expected) throw error('NATIVE_DRIFT');
       }
       for (const [file, expected] of sources) {
-        if (stamp(stat(file)) !== expected) throw error('NATIVE_DRIFT');
+        if (stamp(stat(file), file) !== expected) throw error('NATIVE_DRIFT');
       }
       for (const [dir, expected] of inventories) {
         let names;
@@ -310,17 +325,21 @@ function createSourceLedger(deps) {
 async function inspectSources(context, deps, { includeGlobal = true, ledger = createSourceLedger(deps) } = {}) {
   const { cwd, configRoot, home, appdata, environment, command } = context;
   const entries = [];
-  async function stat(file) {
+  async function stat(file, nativeTouch = false) {
     ledger.parents(file);
     let value;
     try { value = await deps.fs.lstat(file); }
     catch (e) { if (e.code !== 'ENOENT') throw error('NATIVE_SOURCE'); value = null; }
-    ledger.record(file, value);
+    ledger.record(file, value, nativeTouch);
     return value;
   }
   async function regular(file, { managed = false, mcp = false, presenceOnly = false, stampOnly = false, cache } = {}) {
-    const s = await stat(file);
-    if (!s) { entries.push([file, 'absent']); return; }
+    const nativeTouch = cache === 'policy-limits.json';
+    const s = await stat(file, nativeTouch);
+    if (!s) {
+      if (context.teamPolicy && cache) throw error('NATIVE_POLICY');
+      entries.push([file, 'absent']); return;
+    }
     if (s.isSymbolicLink() || !s.isFile()) throw error('NATIVE_SOURCE');
     if (presenceOnly) throw error('NATIVE_CONFLICT');
     if (stampOnly) { entries.push([file, statStamp(s)]); return; }
@@ -328,9 +347,10 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     let text;
     try { text = await deps.fs.readFile(file, 'utf8'); } catch { throw error('NATIVE_SOURCE'); }
     parseSettings(text, managed, mcp, cache);
-    const after = await stat(file);
-    if (!after || statStamp(s) !== statStamp(after)) throw error('NATIVE_DRIFT');
-    entries.push([file, statStamp(s), hash(text)]);
+    const after = await stat(file, nativeTouch);
+    const sourceStamp = nativeTouch ? cacheStamp : statStamp;
+    if (!after || sourceStamp(s) !== sourceStamp(after)) throw error('NATIVE_DRIFT');
+    entries.push([file, sourceStamp(s), hash(text)]);
   }
   async function directory(dir, rejectPresence = false) {
     const s = await stat(dir);
@@ -433,7 +453,8 @@ function preparedEnvironment(parent, context, deps, canonicalModel, metadataOnly
 
 function accountFingerprint(value, context) {
   if (!object(value) || value.loggedIn !== true || value.authMethod !== 'claude.ai'
-      || value.apiProvider !== 'firstParty' || !['pro', 'max'].includes(value.subscriptionType)) throw error('NATIVE_AUTH');
+      || value.apiProvider !== 'firstParty' || !['pro', 'max', 'team'].includes(value.subscriptionType)) throw error('NATIVE_AUTH');
+  if (value.subscriptionType === 'team' && (typeof value.orgId !== 'string' || !value.orgId)) throw error('NATIVE_AUTH');
   // Native account metadata only. No credentials/global-config parsing, no token hash.
   const account = [value.accountUuid ?? null, value.email ?? null, value.orgId ?? null];
   if (!account.some(v => typeof v === 'string' && v.length)) throw error('NATIVE_AUTH');
@@ -441,8 +462,33 @@ function accountFingerprint(value, context) {
   return hash(JSON.stringify([context.configRootMode, context.nativeConfigRoot, context.configRoot, context.home, account, value.subscriptionType]));
 }
 
+// Doctor's human-readable status is captured before its organization-policy wait.
+// A pending remote line is therefore retryable, but neither a failed fetch nor
+// source drift is. A loaded line alone is insufficient: a 200 response may be
+// applied in memory without being persisted. Require native's distinct HTTP 304
+// and cache-adoption markers for BOTH caches, observed in the same invocation.
+// This attests a fresh snapshot, not an atomic lock against later server updates.
+function teamPolicyStatus(result) {
+  const lines = (result.stdout + '\n' + result.stderr).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').split(/\r?\n/).map(s => s.trim());
+  const remote = lines.filter(s => s.startsWith('Managed settings (remote):'));
+  const organization = lines.filter(s => s.startsWith('Organization policy:'));
+  const debug = result.stderr.split(/\r?\n/).map(s => s.match(/^(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?\[DEBUG\] (.*)$/)?.[1]).filter(Boolean);
+  const policyDebug = debug.filter(s => /^(?:Remote settings|Policy limits): /.test(s));
+  if (remote.length !== 1 || organization.length !== 1
+      || organization[0] !== 'Organization policy: Loaded from api.anthropic.com'
+      || lines.some(s => /settings.*(?:error|invalid|failed)|(?:error|invalid|failed).*settings/i.test(s))
+      || policyDebug.some(s => /fetched|failed|failure|deferred|superseded|reset|refreshed|lossy|invalid|unrestricted|timed out|stale|no settings found|applied|rejected|unexpected|unauthorized|error|newer/i.test(s))) throw error('NATIVE_POLICY');
+  const pending = remote[0] === 'Managed settings (remote): checking… (fetch in progress; re-run in a moment)';
+  if (!pending && remote[0] !== 'Managed settings (remote): loaded') throw error('NATIVE_POLICY');
+  for (const marker of ['Remote settings: Using cached settings (304)', 'Remote settings: Cache still valid (304 Not Modified)',
+    'Policy limits: Using cached restrictions (304)', 'Policy limits: Cache still valid (304 Not Modified)']) {
+    if (policyDebug.filter(s => s === marker).length !== 1) throw error('NATIVE_POLICY');
+  }
+  return pending ? 'pending' : 'confirmed';
+}
+
 function validateIdentity(identity) {
-  if (!object(identity) || identity.contract !== RUNTIME_CONTRACT || !isSupportedVersion(identity.version)
+  if (!object(identity) || ![RUNTIME_CONTRACT, TEAM_RUNTIME_CONTRACT].includes(identity.contract) || !isSupportedVersion(identity.version)
       || resolveModel(identity.model) !== identity.model || !['default', 'explicit'].includes(identity.configRootMode)
       || !['executable', 'configRoot', 'home', 'cwd'].every(k => typeof identity[k] === 'string' && path.isAbsolute(identity[k]))
       || (identity.configRootMode === 'default' ? identity.nativeConfigRoot !== null : typeof identity.nativeConfigRoot !== 'string' || !path.isAbsolute(identity.nativeConfigRoot))
@@ -520,27 +566,60 @@ function createRuntime(options, deps) {
         const r = await execute(['auth', 'status', '--json']);
         let value;
         try { value = JSON.parse(r.stdout); } catch { throw error('NATIVE_AUTH'); }
-        return accountFingerprint(value, context);
+        const fingerprint = accountFingerprint(value, context);
+        context.teamPolicy = value.subscriptionType === 'team';
+        return fingerprint;
       }
       const fingerprint = await auth();
-      const doctor = await execute(['doctor']);
-      const lines = (doctor.stdout + '\n' + doctor.stderr).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').split(/\r?\n/).map(s => s.trim());
-      if (!lines.includes(REMOTE_PERSONAL) || !lines.includes(ORG_PERSONAL)
-          || lines.some(s => /settings.*(?:error|invalid|failed)|(?:error|invalid|failed).*settings/i.test(s))) throw error('NATIVE_POLICY');
+      async function policy() {
+        if (context.teamPolicy) {
+          // Validate and baseline existing cache bytes before each metadata child;
+          // no missing-cache warmup or mutation retry is silently authorized.
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const before = await inspectSources(context, deps, { includeGlobal: false });
+            const result = await execute(['--debug-to-stderr', 'doctor']);
+            if (await inspectSources(context, deps, { includeGlobal: false }) !== before) throw error('NATIVE_DRIFT');
+            if (teamPolicyStatus(result) === 'confirmed') return;
+          }
+          throw error('NATIVE_POLICY');
+        }
+        const doctor = await execute(['doctor']);
+        const lines = (doctor.stdout + '\n' + doctor.stderr).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').split(/\r?\n/).map(s => s.trim());
+        if (!lines.includes(REMOTE_PERSONAL) || !lines.includes(ORG_PERSONAL)
+            || lines.some(s => /settings.*(?:error|invalid|failed)|(?:error|invalid|failed).*settings/i.test(s))) throw error('NATIVE_POLICY');
+      }
+      await policy();
       if (await inspectSources(context, deps, { includeGlobal: false }) !== initialSources) throw error('NATIVE_DRIFT');
       // The first native metadata startup may migrate its own .claude.json. We must
       // not parse this credential-bearing file to distinguish those writes. Instead,
       // establish a full stat baseline, then require a second, stable metadata pass.
-      const launchLedger = createSourceLedger(deps);
-      const launchSources = await inspectSources(context, deps, { ledger: launchLedger });
+      let launchLedger = createSourceLedger(deps);
+      let launchSources = await inspectSources(context, deps, { ledger: launchLedger });
       if (await auth() !== fingerprint || await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
-      const identity = freeze({ contract: RUNTIME_CONTRACT, version, executable: context.command,
+      const identity = freeze({ contract: context.teamPolicy ? TEAM_RUNTIME_CONTRACT : RUNTIME_CONTRACT, version, executable: context.command,
         model, configRoot: context.configRoot, configRootMode: context.configRootMode, nativeConfigRoot: context.nativeConfigRoot,
         home: context.home, cwd: context.cwd, executableFingerprint: context.executableFingerprint, accountFingerprint: fingerprint });
       if (expected && Object.keys(identity).some(k => identity[k] !== expected[k])) throw error('NATIVE_DRIFT');
       async function recheck() {
         if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
         if (await auth() !== fingerprint) throw error('NATIVE_DRIFT');
+        if (context.teamPolicy) {
+          if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
+          await policy();
+          // Doctor updates its own global metadata even on a 304. Apply the same
+          // bounded global-config migration rule as initial preflight: every
+          // nonglobal source must retain the original snapshot, then establish a
+          // new global baseline and require a second stable native auth pass.
+          // Never read credential-bearing .claude.json to classify its contents.
+          if (await inspectSources(context, deps, { includeGlobal: false }) !== initialSources) throw error('NATIVE_DRIFT');
+          const refreshedLedger = createSourceLedger(deps);
+          const refreshedSources = await inspectSources(context, deps, { ledger: refreshedLedger });
+          if (await auth() !== fingerprint || await inspectSources(context, deps) !== refreshedSources) throw error('NATIVE_DRIFT');
+          if (await inspectSources(context, deps, { includeGlobal: false }) !== initialSources) throw error('NATIVE_DRIFT');
+          refreshedLedger.revalidate();
+          launchLedger = refreshedLedger;
+          launchSources = refreshedSources;
+        }
         if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
         launchLedger.revalidate();
         return identity;

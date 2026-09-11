@@ -100,7 +100,7 @@ async function nativeDiagnostic(options, env) {
     model: identity.model, profile_mode: identity.configRootMode,
     executable_fingerprint: identity.executableFingerprint, account_fingerprint: identity.accountFingerprint,
     task_submitted: false, live_credentials_verified: false, model_entitlement_verified: false,
-    note: 'Compatibility and saved personal-profile metadata only; native ancillary network and local metadata writes are possible.' };
+    note: 'Compatibility, saved-login metadata, and account policy only; native ancillary network and local metadata writes are possible.' };
 }
 
 async function main(args = process.argv.slice(2), env = process.env) {
