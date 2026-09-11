@@ -27,7 +27,7 @@ function fakeLaunch(cwd, model = 'claude-opus-5[1m]', mode = 'normal') {
 }
 function fakeRuntime(options) {
   return { async preflight({ cwd, model, expectedIdentity }) {
-    const identity = Object.freeze({ contract: RUNTIME_CONTRACT, version: '2.1.263', executable: process.execPath,
+    const identity = Object.freeze({ contract: RUNTIME_CONTRACT, version: '2.1.264', executable: process.execPath,
       model: resolveModel(model), cwd, home: path.dirname(cwd), configRoot: options.configRoot || path.dirname(cwd),
       configRootMode: options.configRoot === undefined ? 'default' : 'explicit', nativeConfigRoot: options.configRoot ?? null,
       accountFingerprint: 'a'.repeat(64), executableFingerprint: 'b'.repeat(64) });

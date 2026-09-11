@@ -23,7 +23,7 @@ async function serve() {
     if (!state) {
       const model = 'claude-opus-5[1m]', cwd = input.working_dir;
       state = { turn: 0, requests: {}, marker: input.message.match(/marker: ([^.]+)\./)[1],
-        runtime: { contract: 'native-windows-personal/2.1.263/v1', version: '2.1.263',
+        runtime: { contract: 'native-windows-personal/2.1.263/v1', version: '2.1.264',
           executable: path.join(root, 'synthetic.exe'), model, configRoot: path.join(root, '.claude'),
           configRootMode: 'default', nativeConfigRoot: null, home: root, cwd,
           executableFingerprint: 'a'.repeat(64), accountFingerprint: 'b'.repeat(64) } };

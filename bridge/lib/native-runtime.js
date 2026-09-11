@@ -1,6 +1,6 @@
 'use strict';
 
-// Native Windows 2.1.263 adapter. Deliberately not wired into the bridge yet.
+// Native Windows adapter for Claude Code stable releases newer than 2.1.263.
 // This is a settings/launch contract, NOT an OS sandbox or an atomic policy lock.
 const fs = require('node:fs/promises');
 const syncFs = require('node:fs');
@@ -9,9 +9,9 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { fail } = require('./config');
+const { isSupportedVersion, parseVersionOutput } = require('./native-version');
 
 const RUNTIME_CONTRACT = 'native-windows-personal/2.1.263/v1';
-const VERSION = '2.1.263';
 const FIRST_PARTY = 'https://api.anthropic.com';
 // Only IDs exercised by this contract are admitted. Expansion requires native tests.
 const MODEL_CATALOG = Object.freeze({ opus: 'claude-opus-5[1m]', 'opus[1m]': 'claude-opus-5[1m]',
@@ -29,7 +29,7 @@ const error = code => fail(code, {
   NATIVE_CONFLICT: 'Native routing, authentication, or dynamic policy conflicts with this runtime. No task submitted.',
   NATIVE_ROOT: 'Native profile root is unsupported. Preserve the standard root or explicitly select an existing native profile.',
   NATIVE_PLATFORM: 'This native runtime contract supports Windows only.',
-  NATIVE_COMPATIBILITY: 'Native executable does not satisfy the pinned compatibility contract.',
+  NATIVE_COMPATIBILITY: 'Native executable requires Claude Code newer than 2.1.263 and the supported runtime flags.',
   NATIVE_AUTH: 'An ordinary saved first-party Pro or Max login is required; gateway, environment, and organization logins are unsupported.',
   NATIVE_POLICY: 'Native personal-account policy eligibility could not be established. No task submitted.',
   NATIVE_DIAGNOSTIC: 'Native metadata command failed or exceeded its bounds. No task submitted.',
@@ -82,7 +82,7 @@ const SAFE_NATIVE_ENV = new Set(`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CLAUDE
   CLAUDE_CODE_MAX_OUTPUT_TOKENS CLAUDE_CODE_DISABLE_TERMINAL_TITLE CLAUDE_CODE_ENABLE_TELEMETRY
   CLAUDE_CODE_TMPDIR CLAUDE_CODE_EFFORT_LEVEL CLAUDE_CODE_DISABLE_AUTO_MEMORY
   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY
-  CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`.split(/\s+/));
+  CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`.split(/\s+/));
 const DROP_PARENT = /^(?:CLAUDECODE|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_SDK_.*|CLAUDE_AGENT_SDK_.*|CLAUDE_BRIDGE_.*|AGENT_PROXY_.*|OPENAI_.*|CODEX_.*|ANTHROPIC_.*|CLAUDE_CODE_(?:CLIENT_CERT|CLIENT_KEY|CLIENT_KEY_PASSPHRASE|OAUTH_.*)|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED|NODE_USE_ENV_PROXY|BUN_OPTIONS|AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|BEARER_TOKEN_BEDROCK|PROFILE|CONFIG_FILE|SHARED_CREDENTIALS_FILE|ENDPOINT_URL.*)|GOOGLE_APPLICATION_CREDENTIALS)$/;
 
 function envEntries(env) {
@@ -118,7 +118,8 @@ const ORDINARY_FIELDS = new Set(`$schema model permissions env hooks disableAllH
   autoConnectIde autoInstallIdeExtension externalEditorContext defaultShell
   disableRemoteControl disableWorkflows disableCommandPluginSources disableAutoMode
   fastMode fastModePerSessionOptIn diffTool keybindingFlavor axScreenReader prefersReducedMotion
-  emojiCompletionEnabled autoScrollEnabled showClearContextOnPlanAccept`.split(/\s+/));
+  emojiCompletionEnabled autoScrollEnabled showClearContextOnPlanAccept
+  modelSettings tui theme skipDangerousModePermissionPrompt skipAutoPermissionPrompt agentPushNotifEnabled mcpServers`.split(/\s+/));
 const MANAGED_FIELDS = new Set(`$schema permissions sandbox disableAllHooks allowedMcpServers deniedMcpServers
   allowManagedMcpServersOnly allowManagedHooksOnly allowManagedPermissionRulesOnly`.split(/\s+/));
 const PERMISSION_FIELDS = new Set(`allow deny ask defaultMode additionalDirectories disableBypassPermissionsMode
@@ -135,9 +136,28 @@ function validateSettings(value, { managed = false } = {}) {
     if (key === 'fallbackModel' && (!Array.isArray(val) || val.length)) throw error('NATIVE_CONFLICT');
     if (key === 'switchModelsOnFlag' && val !== false) throw error('NATIVE_CONFLICT');
     if (key === 'modelOverrides' && (!object(val) || Object.keys(val).length)) throw error('NATIVE_CONFLICT');
+    // Per-model effort preferences do not select a provider or replace a model.
+    // Keep the nested allowlist explicit: future routing fields must not slip in.
+    if (key === 'modelSettings') {
+      if (!object(val)) throw error('NATIVE_SOURCE');
+      for (const preferences of Object.values(val)) {
+        if (!object(preferences)) throw error('NATIVE_SOURCE');
+        for (const [field, preference] of Object.entries(preferences)) {
+          if (field !== 'effortLevel') throw error('NATIVE_CONFLICT');
+          if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(preference)) throw error('NATIVE_SOURCE');
+        }
+      }
+    }
+    if (key === 'tui' && !['default', 'fullscreen'].includes(val)) throw error('NATIVE_SOURCE');
+    if (key === 'theme' && typeof val !== 'string') throw error('NATIVE_SOURCE');
+    if (['skipDangerousModePermissionPrompt', 'skipAutoPermissionPrompt', 'agentPushNotifEnabled'].includes(key)
+        && typeof val !== 'boolean') throw error('NATIVE_SOURCE');
+    // Native --strict-mcp-config selects only our explicit empty MCP config.
+    // These saved definitions are preserved but never started by this runtime.
+    if (key === 'mcpServers' && !object(val)) throw error('NATIVE_SOURCE');
     // A personal preferred model is preserved, but --model is authoritative. Managed
     // model preferences/allowlists are deliberately NOT overridden by this adapter.
-    if (key === 'model') resolveModel(val);
+    if (key === 'model' && (typeof val !== 'string' || !val.trim() || val.includes('\0'))) throw error('NATIVE_SOURCE');
     if (key === 'disableAllHooks' && (typeof val !== 'boolean' || managed && !val)) throw error('NATIVE_CONFLICT');
     if (['allowManagedMcpServersOnly', 'allowManagedHooksOnly', 'allowManagedPermissionRulesOnly'].includes(key) && typeof val !== 'boolean') throw error('NATIVE_SOURCE');
     if (key === '$schema' && typeof val !== 'string') throw error('NATIVE_SOURCE');
@@ -154,10 +174,34 @@ function validateSettings(value, { managed = false } = {}) {
   return true;
 }
 
-function parseSettings(text, managed, mcp = false) {
+// Personal accounts also cache feature availability. Presence alone does not mean
+// organization policy. Admit only understood data, preserve it for native to enforce,
+// and still require native doctor to establish personal-account eligibility.
+function validatePersonalCache(value, kind) {
+  if (!object(value)) throw error('NATIVE_SOURCE');
+  if (kind === 'remote-settings.json') {
+    if (Object.keys(value).some(k => k !== 'channelsEnabled')) throw error('NATIVE_CONFLICT');
+    if (typeof value.channelsEnabled !== 'boolean') throw error('NATIVE_CONFLICT');
+    return;
+  }
+  if (Object.keys(value).some(k => !['restrictions', 'compliance_taints', 'monitoring_notice', 'defaults'].includes(k))
+      || !object(value.restrictions) || !object(value.defaults)
+      || !Array.isArray(value.compliance_taints) || value.compliance_taints.length
+      || value.monitoring_notice !== null) throw error('NATIVE_CONFLICT');
+  for (const [key, restriction] of Object.entries(value.restrictions)) {
+    if (!['allow_quick_web_setup', 'enforce_web_search_mcp_isolation'].includes(key)
+        || !object(restriction) || Object.keys(restriction).length !== 1
+        || typeof restriction.allowed !== 'boolean') throw error('NATIVE_CONFLICT');
+  }
+  if (Object.keys(value.defaults).some(k => k !== 'remote_control_at_startup')
+      || (value.defaults.remote_control_at_startup !== undefined && value.defaults.remote_control_at_startup !== false)) throw error('NATIVE_CONFLICT');
+}
+
+function parseSettings(text, managed, mcp = false, cache) {
   try {
     if (Buffer.byteLength(text) > LIMIT) throw error('NATIVE_SOURCE');
     const value = JSON.parse(text.replace(/^\uFEFF/, ''));
+    if (cache) { validatePersonalCache(value, cache); return; }
     if (mcp) {
       if (!object(value) || !object(value.mcpServers) || Object.keys(value).some(k => k !== 'mcpServers')) throw error('NATIVE_SOURCE');
       return;
@@ -274,7 +318,7 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     ledger.record(file, value);
     return value;
   }
-  async function regular(file, { managed = false, mcp = false, presenceOnly = false, stampOnly = false } = {}) {
+  async function regular(file, { managed = false, mcp = false, presenceOnly = false, stampOnly = false, cache } = {}) {
     const s = await stat(file);
     if (!s) { entries.push([file, 'absent']); return; }
     if (s.isSymbolicLink() || !s.isFile()) throw error('NATIVE_SOURCE');
@@ -283,7 +327,7 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     if (s.size > LIMIT) throw error('NATIVE_SOURCE');
     let text;
     try { text = await deps.fs.readFile(file, 'utf8'); } catch { throw error('NATIVE_SOURCE'); }
-    parseSettings(text, managed, mcp);
+    parseSettings(text, managed, mcp, cache);
     const after = await stat(file);
     if (!after || statStamp(s) !== statStamp(after)) throw error('NATIVE_DRIFT');
     entries.push([file, statStamp(s), hash(text)]);
@@ -303,7 +347,7 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
   // metadata selects the account/gateway. Credential-file stat catches launch-gap edits.
   if (includeGlobal) await regular(path.join(context.configRootMode === 'default' ? home : configRoot, '.claude.json'), { stampOnly: true });
   await regular(path.join(configRoot, '.credentials.json'), { stampOnly: true });
-  for (const name of ['remote-settings.json', 'policy-limits.json']) await regular(path.join(configRoot, name), { presenceOnly: true });
+  for (const name of ['remote-settings.json', 'policy-limits.json']) await regular(path.join(configRoot, name), { cache: name });
   await directory(path.join(appdata, 'Anthropic'), true);
   await directory(path.join(home, '.config/anthropic'), true);
   await regular(path.join(configRoot, 'settings.json'));
@@ -398,7 +442,7 @@ function accountFingerprint(value, context) {
 }
 
 function validateIdentity(identity) {
-  if (!object(identity) || identity.contract !== RUNTIME_CONTRACT || identity.version !== VERSION
+  if (!object(identity) || identity.contract !== RUNTIME_CONTRACT || !isSupportedVersion(identity.version)
       || resolveModel(identity.model) !== identity.model || !['default', 'explicit'].includes(identity.configRootMode)
       || !['executable', 'configRoot', 'home', 'cwd'].every(k => typeof identity[k] === 'string' && path.isAbsolute(identity[k]))
       || (identity.configRootMode === 'default' ? identity.nativeConfigRoot !== null : typeof identity.nativeConfigRoot !== 'string' || !path.isAbsolute(identity.nativeConfigRoot))
@@ -467,8 +511,8 @@ function createRuntime(options, deps) {
         } catch { throw error('NATIVE_DIAGNOSTIC'); }
       };
       const initialSources = await inspectSources(context, deps, { includeGlobal: false });
-      const version = await execute(['--version']);
-      if (version.stdout.trim() !== `${VERSION} (Claude Code)`) throw error('NATIVE_COMPATIBILITY');
+      const version = parseVersionOutput((await execute(['--version'])).stdout);
+      if (!version) throw error('NATIVE_COMPATIBILITY');
       const help = await execute(['--help']);
       const flags = new Set(help.stdout.split(/\s+/));
       if (!FLAGS.every(f => flags.has(f))) throw error('NATIVE_COMPATIBILITY');
@@ -490,7 +534,7 @@ function createRuntime(options, deps) {
       const launchLedger = createSourceLedger(deps);
       const launchSources = await inspectSources(context, deps, { ledger: launchLedger });
       if (await auth() !== fingerprint || await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
-      const identity = freeze({ contract: RUNTIME_CONTRACT, version: VERSION, executable: context.command,
+      const identity = freeze({ contract: RUNTIME_CONTRACT, version, executable: context.command,
         model, configRoot: context.configRoot, configRootMode: context.configRootMode, nativeConfigRoot: context.nativeConfigRoot,
         home: context.home, cwd: context.cwd, executableFingerprint: context.executableFingerprint, accountFingerprint: fingerprint });
       if (expected && Object.keys(identity).some(k => identity[k] !== expected[k])) throw error('NATIVE_DRIFT');

@@ -1,11 +1,13 @@
 'use strict';
 const { performance } = require('node:perf_hooks');
 const { diagnostic, failure, field } = require('./ci-diagnostics');
+const { parseVersionOutput } = require('../lib/native-version');
 
 // Kept outside the fixture solely for deterministic tests. The fixture's raw
 // native launcher remains private, and still checks BOTH stages before EVERY run.
 async function checkCompatibility(launch, options, supportedVersion, requiredFlags, observe = () => {}) {
   const probeOptions = { ...options, input: '' };
+  let version;
   for (const stage of ['version', 'help']) {
     const started = performance.now();
     let result;
@@ -25,13 +27,16 @@ async function checkCompatibility(launch, options, supportedVersion, requiredFla
     if (details.exit !== 0) fail('EXIT_NONZERO', details);
     const stdout = field(result, 'stdout');
     if (typeof stdout !== 'string') fail('INVALID_RESULT', details);
-    if (stage === 'version' && stdout.trim() !== `${supportedVersion} (Claude Code)`) fail('VERSION_MISMATCH', details);
+    if (stage === 'version') {
+      version = parseVersionOutput(stdout, supportedVersion);
+      if (!version) fail('VERSION_MISMATCH', details);
+    }
     if (stage === 'help') {
       const flags = new Set(stdout.split(/\s+/));
       if (!requiredFlags.every(flag => flags.has(flag))) fail('FLAGS_MISSING', details);
     }
     observe(diagnostic(`native-${stage}`, { ...details, elapsedMs: performance.now() - started, code: 'OK', ready: true }));
   }
-  return { version: supportedVersion, flags: [...requiredFlags] };
+  return { version, flags: [...requiredFlags] };
 }
 module.exports = { checkCompatibility };

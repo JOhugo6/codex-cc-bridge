@@ -36,7 +36,7 @@ function safeError(err) {
     NATIVE_CONFLICT: 'Native routing, authentication, or dynamic policy conflicts with this runtime.',
     NATIVE_ROOT: 'Native profile root is unsupported. Preserve the standard root or explicitly select an existing native profile.',
     NATIVE_PLATFORM: 'This native runtime contract supports Windows only.',
-    NATIVE_COMPATIBILITY: 'Native executable does not satisfy the pinned compatibility contract.',
+    NATIVE_COMPATIBILITY: 'Native executable requires Claude Code newer than 2.1.263 and the supported runtime flags.',
     NATIVE_AUTH: 'An ordinary saved first-party Pro or Max login is required.',
     NATIVE_POLICY: 'Native personal-account policy eligibility could not be established.',
     NATIVE_DIAGNOSTIC: 'Native metadata command failed or exceeded its bounds.',

@@ -10,7 +10,7 @@ const { checkCompatibility } = require('./ci-native-compatibility');
 const { lines } = require('./ci-diagnostics');
 
 const MODEL = 'claude-opus-5';
-const SUPPORTED_VERSION = '2.1.263';
+const { MINIMUM_VERSION: SUPPORTED_VERSION } = require('../lib/native-version');
 const REQUIRED_FLAGS = Object.freeze(['--print', '--model', '--settings', '--setting-sources', '--strict-mcp-config', '--mcp-config', '--fallback-model', '--input-format', '--output-format', '--verbose']);
 const SYNTHETIC_KEY = 'sk-ant-api03-native-contract-not-a-real-key';
 const SYNTHETIC_OAUTH = 'sk-ant-oat01-native-contract-not-a-real-token';

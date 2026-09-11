@@ -29,9 +29,9 @@ async function transport(t, respond) {
 
 test('provisioner pins official HTTPS version, platform, hash and size; public surface has no overrides', () => {
   assert.deepEqual(Object.keys(require('../ci/provision-native')), ['main']);
-  assert.equal(ARTIFACT.version, '2.1.263'); assert.equal(ARTIFACT.platform, 'win32-x64');
-  assert.equal(ARTIFACT.sha256, '0b35df94c1307004f07b738390bfef8dfca5e9af29aaf6517f305bf086b95b03');
-  assert.equal(ARTIFACT.size, 218746016); assert.ok(Object.isFrozen(ARTIFACT));
+  assert.equal(ARTIFACT.version, '2.1.268'); assert.equal(ARTIFACT.platform, 'win32-x64');
+  assert.equal(ARTIFACT.sha256, '1e472bcfd49449e73ef76698c87f6583055aeb88dc41ca190a9c12c6791b5eea');
+  assert.equal(ARTIFACT.size, 221637792); assert.ok(Object.isFrozen(ARTIFACT));
   assert.equal(new URL(ARTIFACT.url).protocol, 'https:');
   for (const patch of [
     { version: 'latest' }, { platform: 'linux-x64' }, { sha256: 'x' }, { size: 0 },

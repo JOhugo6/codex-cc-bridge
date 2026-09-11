@@ -10,19 +10,19 @@ const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 
 // Official bootstrap.ps1 establishes this distribution origin/path. Independently
-// checked against the pinned HTTPS manifest and its release signature (2026-09-08).
+// checked against the pinned HTTPS manifest and its release signature (2026-09-11).
 // Updates require source review, never 'latest' or a fork-supplied URL/checksum.
 const ARTIFACT = Object.freeze({
-  version: '2.1.263', platform: 'win32-x64',
-  url: 'https://downloads.claude.ai/claude-code-releases/2.1.263/win32-x64/claude.exe',
-  sha256: '0b35df94c1307004f07b738390bfef8dfca5e9af29aaf6517f305bf086b95b03',
-  size: 218746016,
+  version: '2.1.268', platform: 'win32-x64',
+  url: 'https://downloads.claude.ai/claude-code-releases/2.1.268/win32-x64/claude.exe',
+  sha256: '1e472bcfd49449e73ef76698c87f6583055aeb88dc41ca190a9c12c6791b5eea',
+  size: 221637792,
 });
 const failure = code => Object.assign(new Error(code), { code });
 
 function validateArtifact(artifact) {
-  if (artifact.version !== '2.1.263' || artifact.platform !== 'win32-x64'
-      || artifact.url !== 'https://downloads.claude.ai/claude-code-releases/2.1.263/win32-x64/claude.exe'
+  if (artifact.version !== '2.1.268' || artifact.platform !== 'win32-x64'
+      || artifact.url !== 'https://downloads.claude.ai/claude-code-releases/2.1.268/win32-x64/claude.exe'
       || !/^[a-f0-9]{64}$/.test(artifact.sha256)
       || !Number.isSafeInteger(artifact.size) || artifact.size < 1 || artifact.size > 300 * 1024 * 1024) {
     throw failure('PROVISION_SOURCE');

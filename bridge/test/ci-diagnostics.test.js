@@ -13,7 +13,7 @@ const SECRET = 'SYNTHETIC_DIAGNOSTIC_SECRET_C:/private/token/account/task';
 const VERSION = '2.1.263';
 const FLAGS = ['--print', '--model'];
 const result = stdout => ({ code: 0, stdout, stderr: SECRET, timedOut: false, oversized: false });
-const success = args => Promise.resolve(result(args[0] === '--version' ? `${VERSION} (Claude Code)` : FLAGS.join(' ')));
+const success = args => Promise.resolve(result(args[0] === '--version' ? '2.1.264 (Claude Code)' : FLAGS.join(' ')));
 function safe(value) {
   const output = JSON.stringify(value);
   assert.ok(!output.includes(SECRET));
@@ -214,7 +214,7 @@ test('native compatibility emits two bounded successful stages and checks every 
   };
   for (let i = 0; i < 2; i++) {
     assert.deepEqual(await checkCompatibility(launch, { env, input: SECRET }, VERSION, FLAGS, d => records.push(d)),
-      { version: VERSION, flags: FLAGS });
+      { version: '2.1.264', flags: FLAGS });
   }
   assert.deepEqual(calls, [['--version'], ['--help'], ['--version'], ['--help']]);
   assert.equal(records.length, 4);

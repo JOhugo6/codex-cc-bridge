@@ -13,6 +13,37 @@ async function withFixture(fn, options) {
   try { await fn(f); } finally { await f.close(); }
 }
 
+test('version gate compares stable releases numerically and rejects the baseline or malformed output', async () => withFixture(async f => {
+  const original = f.deps.execute;
+  for (const version of ['2.1.264', '2.1.268', '2.1.1000', '2.2.0', '3.0.0']) {
+    f.deps.execute = (command, args, options) => args.includes('--version')
+      ? Promise.resolve({ stdout: `${version} (Claude Code)\n`, stderr: '' }) : original(command, args, options);
+    const p = await f.runtime().preflight({ cwd: f.project });
+    assert.equal(p.identity.version, version);
+    assert.equal(runtime.validateIdentity(p.identity), true);
+    await p.launch(() => {});
+  }
+  for (const version of ['2.1.263', '2.1.262', '2.1.99', '2.0.999', '1.99.999',
+    '2.1.268-beta.1', '2.1.268+build', '02.1.268', '2.1', 'garbage', '2.1.268 (Claude Code)\nextra']) {
+    f.deps.execute = (command, args, options) => args.includes('--version')
+      ? Promise.resolve({ stdout: `${version} (Claude Code)`, stderr: '' }) : original(command, args, options);
+    await assert.rejects(f.runtime().preflight({ cwd: f.project }), rejection('NATIVE_COMPATIBILITY'));
+  }
+}));
+
+test('runtime identity records the actual version and rejects version changes on continuation', async () => withFixture(async f => {
+  const first = await f.runtime().preflight({ cwd: f.project });
+  const original = f.deps.execute;
+  f.deps.execute = (command, args, options) => args.includes('--version')
+    ? Promise.resolve({ stdout: '2.1.268 (Claude Code)', stderr: '' }) : original(command, args, options);
+  await assert.rejects(f.runtime().preflight({ cwd: f.project, expectedIdentity: first.identity }), rejection('NATIVE_DRIFT'));
+  const current = await f.runtime().preflight({ cwd: f.project });
+  assert.equal(current.identity.version, '2.1.268');
+  for (const version of ['2.1.263', '2.0.999', '2.1.268-beta.1', null, 268]) {
+    assert.throws(() => runtime.validateIdentity({ ...current.identity, version }), rejection('NATIVE_INPUT'));
+  }
+}));
+
 test('pure versioned catalog: explicit precedence, aliases and invalid models; no authentication', () => {
   assert.equal(runtime.resolveModel(), 'claude-opus-5[1m]');
   assert.equal(runtime.resolveModel(undefined, 'claude-opus-5'), 'claude-opus-5');
@@ -38,7 +69,7 @@ test('settings allow permissions/MCP/skills, reject nested routing and unknown/d
   }
   for (const v of [{ policyHelper: { path: SENTINEL } }, { apiKeyHelper: SENTINEL }, { modelOverrides: { 'claude-opus-5': SENTINEL } },
     { fallbackModel: ['claude-opus-5'] }, { switchModelsOnFlag: true }, { forceLoginGatewayUrl: SENTINEL },
-    { processWrapper: SENTINEL }, { modelSettings: {} }, { managedSourcesBehavior: 'merge' }, { unknown: SENTINEL }]) {
+    { processWrapper: SENTINEL }, { modelSettings: { opus: { baseUrl: SENTINEL } } }, { managedSourcesBehavior: 'merge' }, { unknown: SENTINEL }]) {
     assert.throws(() => runtime.validateSettings(v), rejection('NATIVE_CONFLICT'));
   }
   const names = ['anthropic_base_url', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR', 'ANTHROPIC_PROFILE',
@@ -47,6 +78,34 @@ test('settings allow permissions/MCP/skills, reject nested routing and unknown/d
   for (const name of names) assert.throws(() => runtime.validateSettings({ env: { [name]: SENTINEL } }), rejection('NATIVE_CONFLICT'));
   assert.throws(() => runtime.validateSettings({ model: 'opus' }, { managed: true }), rejection('NATIVE_CONFLICT'));
 });
+
+test('ordinary native UI, per-model effort, agent teams and saved MCP preferences survive preflight', async () => withFixture(async f => {
+  const settings = { env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1', MCP_TIMEOUT: '10000' },
+    modelSettings: { 'gpt-5.6-sol': { effortLevel: 'high' }, 'claude-fable-5': { effortLevel: 'max' } },
+    tui: 'fullscreen', theme: 'dark', skipDangerousModePermissionPrompt: true,
+    skipAutoPermissionPrompt: true, agentPushNotifEnabled: false,
+    mcpServers: { saved: { command: 'must-never-start', env: { ANTHROPIC_API_KEY: SENTINEL } } } };
+  assert.equal(runtime.validateSettings(settings), true);
+  const file = path.join(f.config, 'settings.json');
+  await f.json(path.relative(f.root, file), settings);
+  const prepared = await f.runtime({ parentEnv: { ...f.parentEnv, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' } }).preflight({ cwd: f.project });
+  await prepared.launch(l => {
+    assert.ok(l.args.includes('--strict-mcp-config'));
+    assert.equal(l.args[l.args.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
+    assert.equal(l.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, '1');
+    assert.ok(!JSON.stringify(l).includes(SENTINEL));
+  });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), settings);
+  for (const malformed of [{ modelSettings: [] }, { modelSettings: { opus: null } },
+    { modelSettings: { opus: { effortLevel: 'unrecognized' } } }, { tui: false },
+    { theme: {} }, { skipAutoPermissionPrompt: 'true' }, { mcpServers: [] }]) {
+    assert.throws(() => runtime.validateSettings(malformed), rejection('NATIVE_SOURCE'));
+  }
+  for (const field of ['env', 'model', 'apiKeyHelper', 'provider']) {
+    assert.throws(() => runtime.validateSettings({ modelSettings: { opus: { [field]: SENTINEL } } }), rejection('NATIVE_CONFLICT'));
+  }
+  assert.throws(() => runtime.validateSettings(settings, { managed: true }), rejection('NATIVE_CONFLICT'));
+}));
 
 test('parent sanitation is case insensitive, immutable, private, and never restores deleted values', async () => withFixture(async f => {
   Object.assign(f.parentEnv, { aNtHrOpIc_ApI_kEy: SENTINEL, AnThRoPiC_BaSe_Url: SENTINEL,
@@ -211,8 +270,34 @@ test('each view, malformed registry and unreadable registry fails closed', async
   assert.equal(f.calls.length, 0);
 }));
 
-test('presence-only opaque sources and caches reject without reading their contents', async () => withFixture(async f => {
-  for (const relative of ['config/remote-settings.json', 'config/policy-limits.json', 'config/.config.json',
+test('personal feature caches are validated, preserved and included in source drift checks', async () => withFixture(async f => {
+  const remote = { channelsEnabled: true };
+  const policy = { restrictions: { allow_quick_web_setup: { allowed: false }, enforce_web_search_mcp_isolation: { allowed: false } },
+    compliance_taints: [], monitoring_notice: null, defaults: { remote_control_at_startup: false } };
+  await f.json('config/remote-settings.json', remote);
+  await f.json('config/policy-limits.json', policy);
+  const p = await f.runtime().preflight({ cwd: f.project });
+  await p.launch(() => {});
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.config, 'policy-limits.json'), 'utf8')), policy);
+  await f.json('config/remote-settings.json', { channelsEnabled: false });
+  await assert.rejects(p.recheck(), rejection('NATIVE_DRIFT'));
+  for (const bad of [{ channelsEnabled: true, env: { ANTHROPIC_BASE_URL: SENTINEL } }, { policyHelper: SENTINEL }, {}]) {
+    await f.json('config/remote-settings.json', bad);
+    await assert.rejects(f.runtime().preflight({ cwd: f.project }), rejection('NATIVE_CONFLICT'));
+  }
+  await f.json('config/remote-settings.json', remote);
+  for (const bad of [{ ...policy, compliance_taints: [SENTINEL] }, { ...policy, monitoring_notice: SENTINEL },
+    { ...policy, restrictions: { unknown: { allowed: true } } }, { ...policy, defaults: { remote_control_at_startup: true } },
+    { ...policy, env: { ANTHROPIC_AUTH_TOKEN: SENTINEL } }, { ...policy, restrictions: { allow_quick_web_setup: { allowed: false, helper: SENTINEL } } }]) {
+    await f.json('config/policy-limits.json', bad);
+    await assert.rejects(f.runtime().preflight({ cwd: f.project }), rejection('NATIVE_CONFLICT'));
+  }
+  await f.text('config/policy-limits.json', '{');
+  await assert.rejects(f.runtime().preflight({ cwd: f.project }), rejection('NATIVE_SOURCE'));
+}));
+
+test('presence-only opaque sources reject without reading their contents', async () => withFixture(async f => {
+  for (const relative of ['config/.config.json',
     'descriptor-fallback/.oauth_token', 'descriptor-fallback/.api_key']) {
     await f.text(relative, SENTINEL);
     await assert.rejects(f.runtime().preflight({ cwd: f.project }), rejection('NATIVE_CONFLICT'));
@@ -262,7 +347,7 @@ test('version/help and doctor semantic failures reject even successful metadata 
     f.deps.execute = async (command, args, options) => {
       if (scenario === 'throw') throw new Error(SENTINEL);
       if (scenario === 'oversize') return { stdout: SENTINEL.repeat(20000), stderr: '' };
-      if (scenario === 'version' && args.includes('--version')) return { stdout: '2.1.264 (Claude Code)', stderr: SENTINEL };
+      if (scenario === 'version' && args.includes('--version')) return { stdout: '2.1.262 (Claude Code)', stderr: SENTINEL };
       if (scenario === 'help' && args.includes('--help')) return { stdout: '--print --model', stderr: SENTINEL };
       if (scenario === 'doctor' && args.includes('doctor')) return { stdout: 'Organization policy: skipped custom endpoint ' + SENTINEL, stderr: '' };
       return original(command, args, options);

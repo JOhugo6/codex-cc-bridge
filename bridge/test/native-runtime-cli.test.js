@@ -1,7 +1,8 @@
 'use strict';
-// Actual native 2.1.263, disposable saved credentials, loopback inference only.
+// Actual supported native CLI, disposable saved credentials, loopback inference only.
 // The ancillary deny proxy is application-level containment, not OS isolation.
 const test = require('node:test');
+const { isSupportedVersion } = require('../lib/native-version');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -48,7 +49,7 @@ test('native positive prepared launch: saved Max, canonical Opus, context/skills
     first = false; sendReads(f, res, r.body.model); return true;
   });
   const p = await f.runtime().preflight({ cwd: f.project });
-  assert.equal(p.identity.version, '2.1.263');
+  assert.ok(isSupportedVersion(p.identity.version));
   assert.equal(inference(f).length, 0, 'preflight must not submit task text');
   const result = await p.launch(l => f.runPrepared(l));
   assert.equal(result.code, 0, 'native prepared launch must succeed');

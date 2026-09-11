@@ -25,8 +25,10 @@ review/testing. See [the runbook](docs/runbook.md#reliability-47).
 - Installer: Windows PowerShell **5.1** or PowerShell **7**. The native supervisor
   requires Windows PowerShell 5.1; the complete test suite requires **both** shells
   and the .NET Framework C# compiler.
-- Actual native **Claude Code 2.1.263**, `claude.exe` on PATH for installation.
-  Other versions, shell shims and non-Windows native inference are unsupported.
+- Actual native **Claude Code > 2.1.263**, `claude.exe` on PATH for installation.
+  Versions are compared numerically; older versions, 2.1.263 and prereleases are rejected.
+  Newer versions must also pass CLI and personal-profile checks. Shell shims
+  and non-Windows native inference are unsupported.
 - An existing **saved personal Pro or Max, first-party claude.ai login** on this PC.
   Gateway, Team/Enterprise, unknown account types, API-key and environment-OAuth
   routing are unsupported. No credentials are copied or read by the bridge adapter.
@@ -166,7 +168,7 @@ current-source aggregate verifies it, do not infer full Node20 compatibility fro
 C2's non-installer tests. This is separate from unresolved reliability item 47.
 
 CI has Windows Node20/24 jobs and real pinned native provisioning. The CI-only
-`bridge/ci/provision-native.js` downloads official Windows x64 **2.1.263**, checks
+`bridge/ci/provision-native.js` downloads official Windows x64 **2.1.268**, checks
 its fixed size/SHA256 before publishing the executable, then CI checks the native
 version/flags in a disposable synthetic profile. HTTPS only, no redirects, latest,
 repository-variable binary or login. PRs use the **trusted base commit's** helper,

@@ -73,7 +73,7 @@ jobs:
           sparse-checkout: bridge/ci
       - name: Download and verify official pinned Windows x64 artifact
         run: |
-          $out = Join-Path $env:RUNNER_TEMP 'claude-native-2.1.263'
+          $out = Join-Path $env:RUNNER_TEMP 'claude-native-2.1.268'
           $helper = Join-Path $env:GITHUB_WORKSPACE 'native-provision-source/bridge/ci/provision-native.js'
           if (!(Test-Path -LiteralPath $helper -PathType Leaf)) {
             throw 'Native gate BLOCKED: reviewed provisioner must first exist on the trusted base branch. Never substitute fork/PR-head provisioning code.'

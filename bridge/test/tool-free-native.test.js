@@ -1,5 +1,6 @@
 'use strict';
 const test = require('node:test');
+const { isSupportedVersion } = require('../lib/native-version');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const { fixture, printArgs } = require('./native-contract-fixture');
@@ -99,7 +100,7 @@ test('actual native offline smoke protocol has two messages, restart, exact repl
     const result = await rehearse(async () => (await connectNative(f, { CLAUDE_BRIDGE_DISABLE_TOOLS: '1' })).client,
       f.project, 'tiny-synthetic-marker');
     assert.equal(result.tools_disabled, true); assert.equal(result.exact_cached_replay, true);
-    assert.equal(result.live_entitlement_verified, false); assert.equal(result.version, '2.1.263');
+    assert.equal(result.live_entitlement_verified, false); assert.ok(isSupportedVersion(result.version));
     assertWire(f, 2);
     for (const r of inference(f)) assert.deepEqual(r.body.tools || [], []);
     assert.ok(JSON.stringify(inference(f).at(-1).body.messages).includes('Remember this synthetic marker: tiny-synthetic-marker.'));

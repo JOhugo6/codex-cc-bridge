@@ -13,7 +13,7 @@ const MODEL = resolveModel('opus');
 const HELP = `Usage: npm run smoke -- --live
 Alternatively set CLAUDE_BRIDGE_LIVE=1. Without explicit opt-in this command refuses.
 Runs two tiny synthetic messages across an MCP restart plus exact cached replay.
-Uses pinned native 2.1.263 with --tools empty: no tool implementations, hooks disabled,
+Uses native Claude Code >2.1.263 with --tools empty: no tool implementations, hooks disabled,
 strict empty child MCP. dontAsk and allowedTools=[] alone are NOT tool removal.
 Consumes real subscription/API usage, may cost money, and leaves native transcripts
 in the selected native profile. Existing global native instructions may still apply.

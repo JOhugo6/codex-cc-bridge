@@ -95,7 +95,7 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
       calls.push({ kind: args.at(-1) === '--version' ? 'version' : args.at(-1) === '--help' ? 'help' : args.includes('doctor') ? 'doctor' : 'auth' });
       if (beforeExecute) await beforeExecute(command, args, options);
       if (native) return api.private.production.execute(command, args, options);
-      if (args.includes('--version')) return { stdout: '2.1.263 (Claude Code)\n', stderr: '' };
+      if (args.includes('--version')) return { stdout: '2.1.264 (Claude Code)\n', stderr: '' };
       if (args.includes('--help')) return { stdout: api.private.FLAGS.join(' '), stderr: '' };
       if (args.includes('doctor')) return { stdout: 'Managed settings (remote): not fetched — requires an Enterprise or Team subscription\nOrganization policy: not applicable to Pro and Max accounts\n', stderr: '' };
       return { stdout: JSON.stringify(account), stderr: '' };

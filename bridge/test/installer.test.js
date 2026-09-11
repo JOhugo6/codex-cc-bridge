@@ -9,10 +9,11 @@ const { spawnSync } = require('node:child_process');
 // Helpers are loaded below from an isolated repo-shaped source snapshot.
 const repo = path.resolve(__dirname, '..', '..');
 const fixtureRoot = path.join(__dirname, 'installer-fixtures');
-const frozenNative = fs.readFileSync(path.join(repo, 'bridge', 'lib', 'native-runtime.js'));
-assert.equal(crypto.createHash('sha256').update(frozenNative).digest('hex'), 'c973448ca7e95cd7a14c8e26363bc236ca610783c5d8c141eb37094022ffae22');
-// Take snapshots of B-owned files and the existing timeout helper once. No test
-// copies the concurrently edited A runtime/backend/bridge/index/doctor sources.
+// Capture the runtime and its local version dependency once, so every isolated
+// fixture uses the same source bytes without pinning tests to an old revision.
+const nativeSnapshots = Object.fromEntries(['native-runtime.js', 'native-version.js']
+  .map(file => [file, fs.readFileSync(path.join(repo, 'bridge', 'lib', file))]));
+// Snapshot installer inputs once; backend/index/doctor use offline fixtures.
 const snapshots = Object.fromEntries(['install.ps1', 'bridge/install-config.js', 'skills/claude-peer/SKILL.md', 'bridge/configure-timeout.js'].map(file => [file, fs.readFileSync(path.join(repo, file))]));
 const ps5 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const ps7Candidates = [path.join(process.env.ProgramFiles || 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe'), path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'pwsh.exe')];
@@ -26,7 +27,7 @@ let nodeSeed;
 const isolatedHelpers = fs.mkdtempSync(path.join(os.tmpdir(), 'installer-helper-source-'));
 const configStub = 'exports.fail = (code, message) => Object.assign(new Error(message), { code });\n';
 write(path.join(isolatedHelpers, 'install-config.js'), snapshots['bridge/install-config.js']);
-write(path.join(isolatedHelpers, 'lib', 'native-runtime.js'), frozenNative);
+for (const [file, bytes] of Object.entries(nativeSnapshots)) write(path.join(isolatedHelpers, 'lib', file), bytes);
 write(path.join(isolatedHelpers, 'lib', 'config.js'), configStub);
 const { prepareOptions, codexParts, replaceCodex, expectedCodexWrite } = require(path.join(isolatedHelpers, 'install-config.js'));
 test.after(() => fs.rmSync(isolatedHelpers, { recursive: true, force: true }));
@@ -85,7 +86,7 @@ function pc(t, label = 'PC-A', { codex = true, parentRoot = false, binName = 'Pr
   fs.copyFileSync(path.join(fixtureRoot, 'external-cli.js'), path.join(bin, 'external-cli.js'));
   for (const name of ['npm', ...(codex ? ['codex'] : [])]) write(path.join(bin, `${name}.cmd`), `@"%~dp0node.exe" "%~dp0external-cli.js" ${name} %*\r\n`);
   for (const [relative, bytes] of Object.entries(snapshots)) write(path.join(source, relative), bytes);
-  write(path.join(source, 'bridge', 'lib', 'native-runtime.js'), frozenNative);
+  for (const [file, bytes] of Object.entries(nativeSnapshots)) write(path.join(source, 'bridge', 'lib', file), bytes);
   write(path.join(source, 'bridge', 'lib', 'config.js'), configStub);
   write(path.join(source, 'bridge', 'package.json'), JSON.stringify({ name: 'codex-cc-bridge', version: 'fixture', private: true, dependencies: {} }));
   write(path.join(source, 'bridge', 'package-lock.json'), '{"lockfileVersion":3}');

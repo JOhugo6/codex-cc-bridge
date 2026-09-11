@@ -79,7 +79,7 @@ test('doctor preflight mirrors exact child-root semantics, sanitizes identity, n
     const r = await capture(() => doctor.main(['--native', '--cwd', f.project, '--model', 'opus'], env));
     assert.equal(r.code, 0, r.stderr);
     const out = JSON.parse(r.stdout);
-    assert.equal(out.model, 'claude-opus-5[1m]'); assert.equal(out.version, '2.1.263');
+    assert.equal(out.model, 'claude-opus-5[1m]'); assert.equal(out.version, '2.1.264');
     assert.equal(out.profile_mode, defaultRoot ? 'default' : 'explicit');
     assert.equal(out.task_submitted, false); assert.equal(out.live_credentials_verified, false);
     assert.equal(Object.hasOwn(seen.parentEnv, 'CLAUDE_CONFIG_DIR'), false);

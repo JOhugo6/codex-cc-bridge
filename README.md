@@ -24,8 +24,10 @@ Podrobnosti v [runbooku](docs/runbook.md#reliability-47).
 - Instalátor: Windows PowerShell **5.1** nebo PowerShell **7**. Nativní supervisor
   potřebuje Windows PowerShell 5.1. Úplné testy vyžadují **oba** shelly a C# compiler
   z .NET Frameworku.
-- Skutečný nativní **Claude Code 2.1.263**, při instalaci `claude.exe` v PATH.
-  Jiná verze, shellové shimy a nativní inference mimo Windows nejsou podporované.
+- Skutečný nativní **Claude Code > 2.1.263**, při instalaci `claude.exe` v PATH.
+  Verze se porovnávají číselně; starší verze, 2.1.263 a prerelease se odmítají.
+  Novější verze musí projít i kontrolou CLI a osobního profilu. Shellové shimy
+  a nativní inference mimo Windows nejsou podporované.
 - Existující **uložené osobní Pro/Max first-party claude.ai přihlášení** na daném PC.
   Gateway, Team/Enterprise, neznámé typy účtů, API key a OAuth předané prostředím
   nejsou podporované. Bridge adaptér credentials nečte ani nekopíruje.
@@ -164,7 +166,7 @@ aktuálních zdrojů, non-installer testy C2 nejsou plná Node20 kompatibilita.
 Jde o jiný problém než neuzavřená reliability 47.
 
 CI má Windows Node20/24 jobs a skutečný pinovaný native provisioning. Pomocník
-`bridge/ci/provision-native.js` stáhne oficiální Windows x64 **2.1.263**, ověří
+`bridge/ci/provision-native.js` stáhne oficiální Windows x64 **2.1.268**, ověří
 pevnou velikost/SHA256 před zpřístupněním executable a CI následně ověří verzi/flags
 v disposable syntetickém profilu. Jen HTTPS, bez redirectů, latest, binárky z
 repository variables nebo loginu. PR používá pomocník z **důvěryhodného base

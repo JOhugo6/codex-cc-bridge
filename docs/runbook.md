@@ -123,7 +123,7 @@ odeslání úlohy. Native transcripty zůstávají lokálně.
 
 | Kód | Bezpečný další postup |
 |---|---|
-| `NATIVE_PLATFORM`, `NATIVE_COMPATIBILITY` | Ověř Windows a přesně 2.1.263; nepoužívej automaticky jinou verzi/fallback. |
+| `NATIVE_PLATFORM`, `NATIVE_COMPATIBILITY` | Ověř Windows a stabilní verzi > 2.1.263 (číselné porovnání); musí projít také kontrola CLI flags a profilu. |
 | `NATIVE_MODEL` | Použij podporovaný katalog; existující model nepřepisuj. |
 | `NATIVE_ROOT`, `NATIVE_INPUT` | Ověř absolutní existující root/cwd/executable, NFC a shodný home. Neopravuj namespace normalizací. |
 | `NATIVE_SOURCE` | Zkontroluj podporovanost/čitelnost settings, bez zveřejňování jejich obsahu. |
@@ -131,6 +131,14 @@ odeslání úlohy. Native transcripty zůstávají lokálně.
 | `NATIVE_AUTH` | Chybí podporovaná saved personal first-party metadata. Případné legitimní přihlášení je oddělený operátorský krok. |
 | `NATIVE_DIAGNOSTIC` | Metadata subprocess selhal nebo překročil limit; uchovej sanitizované důkazy, ne raw auth výstup. |
 | `NATIVE_DRIFT` | Změna zdrojů/identity před submission; viz reliability 47. Žádné retry-until-green. |
+
+Běžné osobní preference (`modelSettings` pouze s `effortLevel`, nastavení rozhraní,
+agent teams a uložené MCP definice) samy o sobě nejsou konflikt routingu.
+Explicitní model bridge má přednost před osobním defaultem a dítě používá prázdný
+`--strict-mcp-config`. Osobní cache `remote-settings.json` / `policy-limits.json`
+se kontrolují podle úzkého schématu a zůstávají součástí kontroly změn před spuštěním;
+jejich pouhá přítomnost už nezpůsobuje `NATIVE_CONFLICT`. Neznámé policy/routing
+položky se dál odmítají. Účet Team/Enterprise nadále vrací `NATIVE_AUTH`.
 
 `CLAUDE_AUTH_FAILED` (například native 401) po zahájení úlohy už není totéž co
 preflight chyba. Neprováděj automatický login/refresh ani znovuodeslání. Nejprve
@@ -261,13 +269,18 @@ po úspěšném ověření. Helper nikdy nic nespouští. Při chybě uklidí je
 vytvořený vlastní adresář; existující cíl odmítne a zachová. Celkový download limit
 je 120 s, bez retry a bez fallbacku. Podpora provisioning helperu: Windows x64.
 
-Přesný pin doložený 2026-09-08:
+CI pin 2.1.268 doložený 2026-09-11 (runtime přijímá stabilní verze > 2.1.263):
 
 - Oficiální distribuci určuje [bootstrap.ps1](https://downloads.claude.ai/claude-code-releases/bootstrap.ps1), pouze přečtený, nikoli spuštěný.
-- [Manifest 2.1.263](https://downloads.claude.ai/claude-code-releases/2.1.263/manifest.json), `platforms.win32-x64`.
-- [Přímý executable](https://downloads.claude.ai/claude-code-releases/2.1.263/win32-x64/claude.exe), **218746016 bajtů**.
-- SHA256 **`0b35df94c1307004f07b738390bfef8dfca5e9af29aaf6517f305bf086b95b03`**.
-- [Detached manifest signature](https://downloads.claude.ai/claude-code-releases/2.1.263/manifest.json.sig) byla ověřena odděleně s [oficiálním klíčem](https://downloads.claude.ai/keys/claude-code.asc), fingerprint **`31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`**, porovnaným s [oficiální dokumentací](https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing).
+- [Manifest 2.1.268](https://downloads.claude.ai/claude-code-releases/2.1.268/manifest.json), `platforms.win32-x64`.
+- [Přímý executable](https://downloads.claude.ai/claude-code-releases/2.1.268/win32-x64/claude.exe), **221637792 bajtů**.
+- SHA256 **`1e472bcfd49449e73ef76698c87f6583055aeb88dc41ca190a9c12c6791b5eea`**.
+- [Detached manifest signature](https://downloads.claude.ai/claude-code-releases/2.1.268/manifest.json.sig) byla ověřena odděleně s [oficiálním klíčem](https://downloads.claude.ai/keys/claude-code.asc), fingerprint **`31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`**, porovnaným s [oficiální dokumentací](https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing).
+
+PR gate používá provisioner z base commitu. Pokud base stále připíná 2.1.263,
+nejprve je potřeba začlenit samostatnou změnu CI artefaktu na 2.1.268 a aktualizovat
+větev s runtime změnou; jinak nový požadavek > 2.1.263 správně odmítne starý artefakt.
+Push build výsledného commitu používá jeho aktualizovaný provisioner.
 
 CI používá již revidovaný pevný checksum v kódu; nestahuje za běhu nový trust key
 ani nepřebírá nový hash z neověřeného manifestu. Jen přesná HTTPS URL, explicitní

@@ -8,9 +8,9 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "start": "node index.js",
-    "test": "node --test --test-reporter=tap --test-concurrency=1 test/prerequisites.test.js test/ci-diagnostics.test.js test/backend.test.js test/bridge.test.js test/mcp.test.js test/native-runtime.test.js test/native-runtime-cli.test.js test/native-first-use.test.js test/native-cli.test.js test/runtime-integration.test.js test/tool-free-native.test.js test/installer.test.js test/doctor.test.js test/doctor-native.test.js test/smoke.test.js test/tool-free.test.js test/provision-native.test.js",
+    "test": "node --test --test-reporter=tap --test-concurrency=1 test/prerequisites.test.js test/ci-diagnostics.test.js test/backend.test.js test/bridge.test.js test/mcp.test.js test/native-runtime.test.js test/native-runtime-cli.test.js test/native-settings-compatibility.test.js test/native-first-use.test.js test/native-cli.test.js test/runtime-integration.test.js test/tool-free-native.test.js test/installer.test.js test/doctor.test.js test/doctor-native.test.js test/smoke.test.js test/tool-free.test.js test/provision-native.test.js",
     "test:unit": "node --test --test-reporter=tap --test-concurrency=1 test/prerequisites.test.js test/ci-diagnostics.test.js test/backend.test.js test/bridge.test.js test/mcp.test.js test/native-runtime.test.js test/doctor.test.js test/smoke.test.js test/tool-free.test.js test/provision-native.test.js",
-    "test:native": "node --test --test-reporter=tap --test-concurrency=1 test/native-runtime-cli.test.js test/native-first-use.test.js test/native-cli.test.js test/runtime-integration.test.js test/doctor-native.test.js test/tool-free-native.test.js",
+    "test:native": "node --test --test-reporter=tap --test-concurrency=1 test/native-runtime-cli.test.js test/native-settings-compatibility.test.js test/native-first-use.test.js test/native-cli.test.js test/runtime-integration.test.js test/doctor-native.test.js test/tool-free-native.test.js",
     "test:ci-diagnostics": "node --test --test-reporter=tap --test-concurrency=1 test/ci-diagnostics.test.js",
     "test:installer": "node --test --test-reporter=tap --test-concurrency=1 test/prerequisites.test.js test/installer.test.js",
     "doctor": "node doctor.js",

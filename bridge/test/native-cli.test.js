@@ -6,6 +6,7 @@
 // preflight, installer interface, credential migration, or an auth-status probe
 // against a real user's profile. All credentials and task text are synthetic.
 const test = require('node:test');
+const { isSupportedVersion } = require('../lib/native-version');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -108,13 +109,13 @@ function unavailablePrimary(f) {
   });
 }
 
-test('native executable/version and required supported flags are pinned', { timeout: 60000 }, async t => {
+test('native executable/version exceeds baseline and required flags remain available', { timeout: 60000 }, async t => {
   const f = await fixture(); t.after(() => f.close());
   const compatibility = await f.verifyCompatibility();
-  assert.equal(compatibility.version, SUPPORTED_VERSION);
+  assert.ok(isSupportedVersion(compatibility.version, SUPPORTED_VERSION));
   assert.deepEqual(compatibility.flags, [...REQUIRED_FLAGS]);
   assert.equal(f.requests.length, 0);
-  t.diagnostic(`PASS actual native ${SUPPORTED_VERSION}; canonical probe model ${MODEL}; Node ${process.version}`);
+  t.diagnostic(`PASS actual native ${compatibility.version}; canonical probe model ${MODEL}; Node ${process.version}`);
 });
 
 test('compatibility prerequisite rejects unsupported version or flags before every task launch', { timeout: 60000 }, async t => {
@@ -322,6 +323,6 @@ test('BLOCKED boundary: auth and initialization metadata do not attest inherited
   const args = printArgs(); args[args.indexOf('--settings') + 1] = '{"disableAllHooks":true,"fallbackModel":[]}';
   const clearedRun = await f.run(args);
   assertUnavailablePrimary(clearedRun, inferenceRequests(f).slice(previousRequests));
-  t.diagnostic('PASS empty fallbackModel array really clears this user-level fallback on 2.1.263; this does NOT prove managed overrides are safe or permitted.');
+  t.diagnostic(`PASS empty fallbackModel array clears this user-level fallback on native ${(await f.verifyCompatibility()).version}; this does NOT prove managed overrides are safe or permitted.`);
   t.diagnostic('BLOCKED contract for the examined interfaces, not a proof of universal impossibility: native saved-login metadata says firstParty even on loopback; initialization omits effective routing/fallback; inherited fallback executes despite canonical --model. A custom ANTHROPIC_BASE_URL disables remote-policy fetch, so these probes cannot attest remote/managed sources or cached gateway credentials. No production interface is frozen.');
 });

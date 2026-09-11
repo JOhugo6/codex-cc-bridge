@@ -1,5 +1,6 @@
 'use strict';
 const { test } = require('node:test');
+const { isSupportedVersion } = require('../lib/native-version');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const syncFs = require('node:fs');
@@ -175,7 +176,7 @@ for (const [name, allowedTools] of [
     const input = first(f.project, { message: 'POLICY_POSITIVE_FIRST_TASK' });
     const one = await connection.client.callTool({ name: 'claude_turn', arguments: input });
     assert.ok(!one.isError, JSON.stringify(one));
-    assert.equal(one.structuredContent.model, MODEL); assert.equal(one.structuredContent.runtime.version, '2.1.263');
+    assert.equal(one.structuredContent.model, MODEL); assert.ok(isSupportedVersion(one.structuredContent.runtime.version));
     assertWire(f, 2);
     const results = inference(f).at(-1).body.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(x => x.type === 'tool_result');
     assert.ok(results.some(x => x.tool_use_id === 'policy_read' && !x.is_error && JSON.stringify(x.content).includes('POLICY_VALID_READ_CONTENT')));
