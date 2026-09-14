@@ -9,7 +9,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { fail, safeError } = require('./config');
-const { acquireProfileLock } = require('./profile-lock');
+const { readGlobalConfigSnapshot } = require('./global-config-snapshot');
 const { isSupportedVersion, parseVersionOutput } = require('./native-version');
 
 const RUNTIME_CONTRACT = 'native-windows-personal/2.1.263/v1';
@@ -278,8 +278,9 @@ function sourceDriftReason(file) {
 }
 
 function createSourceLedger(deps) {
-  const sources = new Map(), ancestors = new Map(), inventories = new Map(), touchedCaches = new Set();
+  const sources = new Map(), ancestors = new Map(), inventories = new Map(), touchedCaches = new Set(), globals = new Set();
   const stamp = (s, file) => {
+    if (globals.has(file)) return readGlobalConfigSnapshot(file, deps.syncFs);
     if (!s) return 'absent';
     if (!touchedCaches.has(file)) return [s.mode, s.isSymbolicLink(), statStamp(s)].join(':');
     // Native refreshes this cache's timestamps on every successful HTTP 304.
@@ -313,9 +314,17 @@ function createSourceLedger(deps) {
       if (sources.has(file) && sources.get(file) !== current) throw error('NATIVE_DRIFT', sourceDriftReason(file));
       sources.set(file, current);
     },
+    global(file) {
+      const current = readGlobalConfigSnapshot(file, deps.syncFs);
+      if (sources.has(file) && sources.get(file) !== current) throw error('NATIVE_DRIFT', 'GLOBAL_METADATA_CHANGED');
+      globals.add(file);
+      sources.set(file, current);
+      return current;
+    },
     inventory(dir, names) { inventories.set(dir, JSON.stringify(names)); },
     revalidate() {
-      // No credential/global-config contents are read, here or in the async scan.
+      // Credentials remain metadata-only; global configuration is compared by a
+      // bounded protected projection, including immediately before task spawn.
       for (const [dir, expected] of ancestors) {
         if (directoryStamp(stat(dir)) !== expected) throw error('NATIVE_DRIFT');
       }
@@ -372,9 +381,13 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     }
     catch { throw error('NATIVE_SOURCE'); }
   }
-  // Never read .credentials.json, .claude.json, or profile-store contents. Native auth
-  // metadata selects the account/gateway. Credential-file stat catches launch-gap edits.
-  if (includeGlobal) await regular(path.join(context.configRootMode === 'default' ? home : configRoot, '.claude.json'), { stampOnly: true });
+  // Credential/profile-store contents remain unread. The global JSON projection
+  // tolerates proven operational writes but preserves every protected/unknown key.
+  if (includeGlobal) {
+    const file = path.join(context.configRootMode === 'default' ? home : configRoot, '.claude.json');
+    ledger.parents(file);
+    entries.push([file, ledger.global(file)]);
+  }
   await regular(path.join(configRoot, '.credentials.json'), { stampOnly: true });
   for (const name of ['remote-settings.json', 'policy-limits.json']) await regular(path.join(configRoot, name), { cache: name });
   await directory(path.join(appdata, 'Anthropic'), true);
@@ -529,7 +542,6 @@ function createRuntime(options, deps) {
   if (parent.HOME && parent.USERPROFILE && path.resolve(parent.HOME) !== path.resolve(parent.USERPROFILE)) throw error('NATIVE_ROOT');
 
   return Object.freeze({
-    acquire: signal => acquireProfileLock(configRoot, signal),
     async preflight(input) {
       if (!object(input) || Object.keys(input).some(k => !['cwd', 'model', 'expectedIdentity'].includes(k))
           || typeof input.cwd !== 'string' || !path.isAbsolute(input.cwd)) throw error('NATIVE_INPUT');
@@ -569,7 +581,9 @@ function createRuntime(options, deps) {
           return r;
         } catch { throw error('NATIVE_DIAGNOSTIC'); }
       };
-      const initialSources = await inspectSources(context, deps, { includeGlobal: false });
+      // Baseline protected global fields BEFORE any native metadata can mutate them.
+      const launchLedger = createSourceLedger(deps);
+      const launchSources = await inspectSources(context, deps, { ledger: launchLedger });
       const version = parseVersionOutput((await execute(['--version'])).stdout);
       if (!version) throw error('NATIVE_COMPATIBILITY');
       const help = await execute(['--help']);
@@ -588,9 +602,9 @@ function createRuntime(options, deps) {
         if (context.teamPolicy) {
           // Validate and baseline existing cache bytes before each metadata child;
           // no missing-cache warmup or mutation retry is silently authorized.
-          const before = await inspectSources(context, deps, { includeGlobal: false });
+          const before = await inspectSources(context, deps);
           const result = await execute(['--debug-to-stderr', 'doctor']);
-          if (await inspectSources(context, deps, { includeGlobal: false }) !== before) throw error('NATIVE_DRIFT');
+          if (await inspectSources(context, deps) !== before) throw error('NATIVE_DRIFT');
           teamPolicyStatus(result);
           return;
         }
@@ -600,12 +614,8 @@ function createRuntime(options, deps) {
             || lines.some(s => /settings.*(?:error|invalid|failed)|(?:error|invalid|failed).*settings/i.test(s))) throw error('NATIVE_POLICY');
       }
       await policy();
-      if (await inspectSources(context, deps, { includeGlobal: false }) !== initialSources) throw error('NATIVE_DRIFT');
-      // The first native metadata startup may migrate its own .claude.json. We must
-      // not parse this credential-bearing file to distinguish those writes. Instead,
-      // establish a full stat baseline, then require a second, stable metadata pass.
-      let launchLedger = createSourceLedger(deps);
-      let launchSources = await inspectSources(context, deps, { ledger: launchLedger });
+      launchLedger.revalidate();
+      if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
       if (await auth() !== fingerprint) throw error('NATIVE_DRIFT', 'ACCOUNT_CHANGED');
       launchLedger.revalidate();
       if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
@@ -624,21 +634,10 @@ function createRuntime(options, deps) {
         if (context.teamPolicy) {
           if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
           await policy();
-          // Doctor updates its own global metadata even on a 304. Apply the same
-          // bounded global-config migration rule as initial preflight: every
-          // nonglobal source must retain the original snapshot, then establish a
-          // new global baseline and require a second stable native auth pass.
-          // Never read credential-bearing .claude.json to classify its contents.
-          if (await inspectSources(context, deps, { includeGlobal: false }) !== initialSources) throw error('NATIVE_DRIFT');
-          const refreshedLedger = createSourceLedger(deps);
-          const refreshedSources = await inspectSources(context, deps, { ledger: refreshedLedger });
+          // Never adopt a new protected snapshot after doctor. Only the explicitly
+          // characterized operational projection may change throughout this turn.
+          launchLedger.revalidate();
           if (await auth() !== fingerprint) throw error('NATIVE_DRIFT', 'ACCOUNT_CHANGED');
-          refreshedLedger.revalidate();
-          if (await inspectSources(context, deps) !== refreshedSources) throw error('NATIVE_DRIFT');
-          if (await inspectSources(context, deps, { includeGlobal: false }) !== initialSources) throw error('NATIVE_DRIFT');
-          refreshedLedger.revalidate();
-          launchLedger = refreshedLedger;
-          launchSources = refreshedSources;
         }
         if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
         launchLedger.revalidate();

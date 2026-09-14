@@ -79,7 +79,7 @@ test('saved Team account requires attested restrictions and preserves identity t
   assert.equal(submitted, true);
   assert.ok(f.calls.filter(x => x.kind === 'doctor').length > before, 'launch re-attests remote policy');
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.config, 'remote-settings.json'))), REMOTE);
-  assert.ok(!f.reads.some(p => /\.credentials\.json$|\.claude\.json$/.test(p)));
+  assert.ok(!f.reads.some(p => /\.credentials\.json$/.test(p)));
 });
 
 test('Team rejects incomplete, failed, contradictory and unattested metadata without submission', async t => {
@@ -168,17 +168,18 @@ test('Team permits native policy-cache timestamp touches but rejects same-size e
   assert.equal(submitted, false);
 });
 
-test('Team refreshes only doctor-owned global metadata and requires a stable second auth', async t => {
+test('Team accepts operational global metadata but never adopts protected doctor or external edits', async t => {
   const f = await teamFixture(); t.after(() => f.close());
   let writes = 0;
+  const global = JSON.parse(await fs.readFile(f.globalFile, 'utf8'));
   f.beforeExecute = async (_command, args) => {
-    if (args.includes('doctor')) await f.json(path.relative(f.root, f.globalFile), { syntheticDoctorMetadata: ++writes });
+    if (args.includes('doctor')) await f.json(path.relative(f.root, f.globalFile), { ...global, numStartups: ++writes });
   };
   const p = await f.runtime().preflight({ cwd: f.project });
   await p.launch(() => {});
   await p.launch(() => {});
   assert.equal(writes, 3);
-  assert.ok(!f.reads.includes(f.globalFile), 'global config remains unread by adapter');
+  assert.ok(f.reads.includes(f.globalFile), 'global protected semantics are checked internally');
   await f.json(path.relative(f.root, f.globalFile), { outsideDoctor: true });
   await assert.rejects(p.launch(() => assert.fail('unexpected submission')), rejects('NATIVE_DRIFT'));
   assert.equal(writes, 3, 'preexisting global edit is rejected before doctor');
@@ -191,7 +192,8 @@ test('Team cannot adopt account, provider, organization or nonglobal mutations d
       const p = await f.runtime().preflight({ cwd: f.project });
       f.beforeExecute = async (_command, args) => {
         if (!args.includes('doctor')) return;
-        await f.json(path.relative(f.root, f.globalFile), { syntheticDoctorMetadata: true });
+        const global = JSON.parse(await fs.readFile(f.globalFile, 'utf8'));
+        await f.json(path.relative(f.root, f.globalFile), { ...global, numStartups: 42 });
         if (mutation === 'account') f.account = { ...f.account, email: 'changed@example.invalid' };
         if (mutation === 'provider') f.account = { ...f.account, apiProvider: 'gateway' };
         if (mutation === 'org') f.account = { ...f.account, orgId: 'changed-org' };
@@ -214,7 +216,7 @@ test('Team final synchronous ledger catches global and same-size policy edits af
       const p = await f.runtime().preflight({ cwd: f.project });
       const file = kind === 'global' ? f.globalFile : path.join(f.config, 'policy-limits.json');
       const bytes = await fs.readFile(file, 'utf8');
-      const edited = kind === 'global' ? bytes + ' ' : bytes.replace('"allowed":false', '"allowed":true ');
+      const edited = kind === 'global' ? JSON.stringify({ ...JSON.parse(bytes), unknownProtectedField: true }) : bytes.replace('"allowed":false', '"allowed":true ');
       let doctorSeen = false, secondAuth = false, validations = 0, changed = false, submitted = false;
       f.beforeExecute = async (_command, args) => {
         if (args.includes('doctor')) doctorSeen = true;
@@ -223,9 +225,10 @@ test('Team final synchronous ledger catches global and same-size policy edits af
       const readdir = f.deps.syncFs.readdirSync;
       f.deps.syncFs.readdirSync = dir => {
         const names = readdir(dir);
-        // After second auth: full scan, nonglobal scan, refreshed ledger,
-        // final full scan, recheck ledger. Mutate before launch resumes.
-        if (secondAuth && ++validations === 5) queueMicrotask(() => {
+        // After second auth: the full scan inventories once, then recheck's
+        // final ledger inventories again. Mutate after recheck resolves and
+        // before launch's last synchronous ledger check / submission.
+        if (secondAuth && ++validations === 2) queueMicrotask(() => {
           require('node:fs').writeFileSync(file, edited); changed = true;
         });
         return names;

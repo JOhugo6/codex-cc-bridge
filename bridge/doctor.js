@@ -93,18 +93,15 @@ async function nativeDiagnostic(options, env) {
   const model = resolveModel(options.model, settings.model);
   const runtime = createNativeRuntime({ executable: settings.command, parentEnv,
     ...(settings.configRoot === undefined ? {} : { configRoot: settings.configRoot }) });
-  const release = await runtime.acquire?.();
-  try {
-    const prepared = await runtime.preflight({ cwd: options.cwd || process.cwd(), model });
-    validateIdentity(prepared.identity);
-    // Never call launch or recheck: no task, stdin, pending state or inference.
-    const identity = prepared.identity;
-    return { ok: true, mode: 'native-preflight', contract: identity.contract, version: identity.version,
-      model: identity.model, profile_mode: identity.configRootMode,
-      executable_fingerprint: identity.executableFingerprint, account_fingerprint: identity.accountFingerprint,
-      task_submitted: false, live_credentials_verified: false, model_entitlement_verified: false,
-      note: 'Compatibility, saved-login metadata, and account policy only; native ancillary network and local metadata writes are possible.' };
-  } finally { if (release) await release(); }
+  const prepared = await runtime.preflight({ cwd: options.cwd || process.cwd(), model });
+  validateIdentity(prepared.identity);
+  // Never call launch or recheck: no task, stdin, pending state or inference.
+  const identity = prepared.identity;
+  return { ok: true, mode: 'native-preflight', contract: identity.contract, version: identity.version,
+    model: identity.model, profile_mode: identity.configRootMode,
+    executable_fingerprint: identity.executableFingerprint, account_fingerprint: identity.accountFingerprint,
+    task_submitted: false, live_credentials_verified: false, model_entitlement_verified: false,
+    note: 'Compatibility, saved-login metadata, and account policy only; native ancillary network and local metadata writes are possible.' };
 }
 
 async function main(args = process.argv.slice(2), env = process.env) {

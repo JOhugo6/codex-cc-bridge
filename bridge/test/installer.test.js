@@ -11,7 +11,7 @@ const repo = path.resolve(__dirname, '..', '..');
 const fixtureRoot = path.join(__dirname, 'installer-fixtures');
 // Capture the runtime and its local dependencies once, so every isolated
 // fixture uses the same source bytes without pinning tests to an old revision.
-const nativeSnapshots = Object.fromEntries(['native-runtime.js', 'native-version.js', 'profile-lock.js', 'config.js']
+const nativeSnapshots = Object.fromEntries(['native-runtime.js', 'native-version.js', 'global-config-snapshot.js', 'config.js']
   .map(file => [file, fs.readFileSync(path.join(repo, 'bridge', 'lib', file))]));
 // Snapshot installer inputs once; backend/index/doctor use offline fixtures.
 const snapshots = Object.fromEntries(['install.ps1', 'bridge/install-config.js', 'skills/claude-peer/SKILL.md', 'bridge/configure-timeout.js'].map(file => [file, fs.readFileSync(path.join(repo, file))]));

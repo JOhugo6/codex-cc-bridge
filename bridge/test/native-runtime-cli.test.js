@@ -73,7 +73,9 @@ test('native default root keeps home .claude.json login/trust identity; explicit
   // before native startup could accidentally create that file.
   await assert.rejects(f.runtime({ configRoot: f.config }).preflight({ cwd: f.project }), reject('NATIVE_ROOT'));
   await assert.rejects(fs.stat(path.join(f.config, '.claude.json')), e => e.code === 'ENOENT');
-  await f.json('.claude/.claude.json', { oauthAccount: { emailAddress: 'explicit-synthetic@example.invalid', organizationUuid: 'synthetic-explicit-org' } });
+  await f.json('.claude/.claude.json', { ...JSON.parse(await fs.readFile(f.globalFile, 'utf8')),
+    oauthAccount: { emailAddress: 'explicit-synthetic@example.invalid', organizationUuid: 'synthetic-explicit-org' } });
+  await f.allowGlobal(path.join(f.config, '.claude.json'));
   const explicit = await f.runtime({ configRoot: f.config }).preflight({ cwd: f.project });
   assert.equal(explicit.identity.configRootMode, 'explicit');
   assert.notEqual(explicit.identity.accountFingerprint, p.identity.accountFingerprint);
@@ -309,9 +311,10 @@ test('native NFC/NFD split fails closed without changing namespace; NFC account 
   const parent = { ...f.parentEnv }, processParent = { ...process.env };
   const nfd = path.join(f.root, 'profile-e' + String.fromCharCode(0x301)), nfc = nfd.normalize('NFC');
   assert.notEqual(nfd, nfc);
+  const initialized = JSON.parse(await fs.readFile(f.globalFile, 'utf8'));
   for (const [root, tag] of [[nfd, 'nfd'], [nfc, 'nfc']]) {
     await fs.cp(f.config, root, { recursive: true });
-    await f.json(path.relative(f.root, path.join(root, '.claude.json')), { hasCompletedOnboarding: true,
+    await f.json(path.relative(f.root, path.join(root, '.claude.json')), { ...initialized, hasCompletedOnboarding: true,
       oauthAccount: { accountUuid: tag === 'nfd' ? '11111111-1111-4111-8111-111111111111' : '33333333-3333-4333-8333-333333333333',
         emailAddress: tag + '@example.invalid', organizationUuid: '22222222-2222-4222-8222-222222222222' },
       projects: { [f.project]: { hasTrustDialogAccepted: true }, [f.project.replaceAll('\\', '/')]: { hasTrustDialogAccepted: true } } });
@@ -319,6 +322,7 @@ test('native NFC/NFD split fails closed without changing namespace; NFC account 
       allow: ['Read(./' + tag + '.txt)'], deny: ['Read(./' + (tag === 'nfd' ? 'nfc' : 'nfd') + '.txt)'] } });
     await f.text('project/' + tag + '.txt', 'EXACT_PROFILE_' + tag + '_CONTENTS');
   }
+  await f.allowGlobal(path.join(nfc, '.claude.json'));
   const settingsBytes = await Promise.all([nfd, nfc].map(root => fs.readFile(path.join(root, 'settings.json'), 'utf8')));
   const selected = [];
   const execute = f.deps.execute;
@@ -404,7 +408,7 @@ test('native final-scan cached gateway mutation rejects before callback with bot
     assert.equal(savedAuth, true); assert.equal(changed, true); assert.equal(callback, false);
     assert.equal(inference(f).length, 0);
     assert.equal(gateway.requests.filter(r => r.url.split('?')[0] === '/v1/messages').length, 0);
-    assert.ok(!f.reads.some(file => /\.credentials\.json$|\.claude\.json$/.test(file)));
+    assert.ok(!f.reads.some(file => /\.credentials\.json$/.test(file)));
     assert.deepEqual(f.parentEnv, parent); assert.deepEqual({ ...process.env }, processParent);
   } finally {
     await gateway.close();

@@ -31,7 +31,9 @@ Podrobnosti v [runbooku](docs/runbook.md#reliability-47).
 - Existující **uložené Pro/Max nebo Team first-party claude.ai přihlášení** na daném PC.
   Team používá stejné přihlášení jako Claude a musí projít kontrolou organizačních
   politik. Gateway, Enterprise, neznámé typy účtů, API key a OAuth předané prostředím
-  nejsou podporované. Bridge adaptér credentials nečte ani nekopíruje.
+  nejsou podporované. Bridge nekopíruje přihlašovací údaje a nečte `.credentials.json`.
+  Globální `.claude.json` interně porovnává podle chráněného obsahu; povolené
+  provozní zápisy ostatních relací toleruje. Obsah souboru ani jeho otisk nezveřejňuje.
 - Codex CLI jen pro registraci `-Target Codex` / `Both`. Pro `-Target Claude`
   a `-SkipRegister` není potřeba.
 

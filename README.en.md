@@ -32,7 +32,9 @@ review/testing. See [the runbook](docs/runbook.md#reliability-47).
 - An existing **saved Pro, Max, or Team first-party claude.ai login** on this PC.
   Team uses the existing Claude login and must pass organization-policy checks.
   Gateway, Enterprise, unknown account types, API-key and environment-OAuth
-  routing are unsupported. No credentials are copied or read by the bridge adapter.
+  routing are unsupported. The bridge does not copy credentials or read `.credentials.json`.
+  It internally compares protected contents of the global `.claude.json`, allowing
+  established operational updates from other sessions without exposing its contents or digest.
 - Codex CLI only for registration with `-Target Codex` or `-Target Both`.
   `-Target Claude` and `-SkipRegister` do not require Codex.
 

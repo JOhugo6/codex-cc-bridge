@@ -136,7 +136,7 @@ test('parent sanitation is case insensitive, immutable, private, and never resto
   delete before.ORDINARY_COLOR;
   const after = { ...f.parentEnv }; delete after.ORDINARY_COLOR;
   assert.deepEqual(after, before);
-  assert.ok(!f.reads.some(p => /credentials|\.claude\.json/.test(p)));
+  assert.ok(!f.reads.some(p => /credentials/.test(p)));
 }));
 
 test('unit fixture canonicalizes owned roots without relaxing containment or native profile aliases', async () => withFixture(async owner => {
@@ -165,7 +165,7 @@ test('unit fixture canonicalizes owned roots without relaxing containment or nat
         await assert.rejects(f.text(outside, 'never written'), rejected);
       }
       for (const file of [f.globalFile, path.join(f.config, '.credentials.json')]) {
-        await assert.rejects(f.deps.fs.readFile(file), /adapter must not read credential-bearing configuration/);
+        await assert.rejects(f.deps.fs.readFile(file), /bounded handle reader|credential stores/);
       }
       assert.deepEqual(f.stats, beforeStats); assert.deepEqual(f.reads, beforeReads);
       const configAlias = path.join(f.root, 'config-alias');
@@ -189,7 +189,8 @@ test('unit fixture canonicalizes owned roots without relaxing containment or nat
       assert.deepEqual(f.parentEnv, parentBefore);
       assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.config, 'settings.json'), 'utf8')), settings);
       assert.equal(await fs.readFile(path.join(f.project, 'CLAUDE.md'), 'utf8'), 'Synthetic project context must remain unchanged.');
-      assert.ok(!f.reads.some(p => /\.credentials\.json$|\.claude\.json$/.test(p)));
+      assert.ok(!f.reads.some(p => /\.credentials\.json$/.test(p)));
+      assert.ok(f.reads.includes(f.globalFile), 'global configuration is inspected only within the synthetic profile');
     } finally { await f.close(); }
   }
 }));
@@ -199,6 +200,7 @@ test('default root preserves unset semantics; explicit same directory has a dist
   assert.equal(prepared.identity.configRootMode, 'default');
   await prepared.launch(l => assert.ok(!Object.hasOwn(l.env, 'CLAUDE_CONFIG_DIR')));
   await f.json('.claude/.claude.json', {});
+  await f.allowGlobal(path.join(f.config, '.claude.json'));
   const explicit = await f.runtime({ configRoot: f.config }).preflight({ cwd: f.project });
   assert.equal(explicit.identity.configRootMode, 'explicit');
   assert.notEqual(prepared.identity.accountFingerprint, explicit.identity.accountFingerprint);
@@ -400,7 +402,7 @@ test('preflight snapshots cwd/options and preserves explicit native profile spel
   });
 }));
 
-test('global config changes between stable metadata passes and before launch reject without reading it', async () => withFixture(async f => {
+test('protected global config changes between metadata passes and before launch reject without exposing content', async () => withFixture(async f => {
   let authCount = 0;
   f.beforeExecute = async (command, args) => {
     if (args.includes('auth') && ++authCount === 2) await f.json('config/.claude.json', { unexpected: true });
@@ -410,7 +412,8 @@ test('global config changes between stable metadata passes and before launch rej
   const p = await f.runtime().preflight({ cwd: f.project });
   await f.json('config/.claude.json', { unexpected: 'another-change' });
   await assert.rejects(p.recheck(), rejection('NATIVE_DRIFT'));
-  assert.ok(!f.reads.some(p => p.endsWith('.claude.json')));
+  assert.ok(f.reads.includes(f.globalFile));
+  assert.ok(!f.reads.some(p => p.endsWith('.credentials.json')));
 }));
 
 test('source identity catches same-content file replacement and executable changes', async () => withFixture(async f => {
@@ -505,7 +508,7 @@ test('completed credential mutations during every awaited source phase reject be
       f.deps.registry = async (...args) => { const rows = await registry(...args); if (armed && phase === 'registry') await mutate(); return rows; };
       await assert.rejects(prepared.launch(() => { callback = true; }), rejection('NATIVE_DRIFT'));
       assert.equal(changed, true, phase); assert.equal(callback, false, phase);
-      assert.ok(!f.reads.some(p => /\.credentials\.json$|\.claude\.json$/.test(p)));
+      assert.ok(!f.reads.some(p => /\.credentials\.json$/.test(p)));
     });
   }
 });
@@ -560,6 +563,7 @@ test('final synchronous ledger rejects source inventory, file and directory/junc
 test('non-NFC filesystem profiles reject instead of changing the saved-auth namespace', async () => withFixture(async f => {
   const nfd = path.join(f.root, 'profile-e' + String.fromCharCode(0x301)), nfc = nfd.normalize('NFC');
   await fs.cp(f.config, nfd, { recursive: true }); await fs.cp(f.config, nfc, { recursive: true });
+  await f.allowGlobal(path.join(nfc, '.claude.json'));
   await assert.rejects(f.runtime({ configRoot: nfd }).preflight({ cwd: f.project }), rejection('NATIVE_ROOT'));
   assert.equal(f.calls.length, 0);
   const spelling = nfc.replaceAll('\\', '/') + '/';

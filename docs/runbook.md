@@ -109,8 +109,11 @@ používá uložené Pro/Max nebo Team first-party přihlášení, ne přenesen�
 Team používá stávající přihlášení a respektuje ověřené organizační politiky.
 Gateway (i vedle uloženého Max), Enterprise/unknown účty a neověřitelné
 managed routing zdroje se odmítají, nikoli obcházejí. Ne-NFC filesystem profily,
-root konflikty a nepodporovaná nepřímá cesta jsou nepodporované. Bridge adaptér
-credential-bearing soubory neparsuje, pouze kontroluje jejich metadata.
+root konflikty a nepodporovaná nepřímá cesta jsou nepodporované. Bridge nečte
+`.credentials.json` ani obsah nativního úložiště přihlašovacích údajů. Globální
+`.claude.json` interně načítá pro porovnání chráněné konfigurace, protože stejný
+soubor obsahuje i běžně měněné provozní údaje. Jeho obsah může být citlivý;
+bridge jej nevypisuje, nekopíruje do profilu ani neukládá do stavu konverzace.
 
 Normální user/project/local settings, CLAUDE.md, skills a permission context se
 zachovají. Hooks jsou vypnuté, child MCP je strict a prázdné, rekurzivní bridge
@@ -141,11 +144,18 @@ starému stavovému řádku není potřeba; nový proces by mohl znovu zobrazit 
 Diagnostické debug výstupy zůstávají interní a omezené velikostí; veřejný výstup
 neobsahuje jejich text, tokeny ani obsah organizačních pravidel.
 
-Nativní Team doctor také zapisuje do `.claude.json`. Bridge před jeho spuštěním
-ověří původní stav, po dokončení znovu ověří stejný účet a organizaci a ustálí
-nový otisk globálního souboru. Credential-bearing obsah nečte. Ostatní zdroje
-musí stále odpovídat původnímu otisku. Tato tolerance je omezena na metadata okno;
-bez čtení obsahu nelze prokázat, že během něj nezapsal do `.claude.json` i jiný proces.
+Nativní Team doctor i běžné Claude relace zapisují do `.claude.json`. Bridge
+porovnává význam jeho chráněného obsahu, nikoli čas zápisu nebo identitu tohoto
+souboru. Ignoruje jen přesně vyjmenované a typově ověřené provozní údaje, například
+počítadla spuštění, historii tipů a projektové metriky poslední relace. Neznámé
+položky, účet, organizace, routing, oprávnění, trust, MCP a hodnoty feature cache
+zůstávají součástí porovnání. Chráněný otisk se ustaví před prvním nativním
+kontrolním příkazem; doctor nesmí do baseline převzít jiné chráněné hodnoty.
+
+Atomická náhrada globálního souboru se stejným chráněným obsahem je přípustná.
+Vadný JSON, nadlimitní obsah, symlink nebo změna chráněného obsahu se odmítají.
+Obsah i sémantický otisk zůstávají pouze interní. Ostatní zdroje včetně
+settings, politik, přihlašovacího souboru a executable zachovávají přísné kontroly.
 
 Kontrola politik se opakuje těsně před spuštěním. Neznámé nebo konfliktní routing,
 auth a dynamické policy položky skončí odmítnutím před odesláním zadání. Podporovaná
@@ -166,8 +176,7 @@ kontroly se startem task procesu.
 | `NATIVE_ROOT`, `NATIVE_INPUT` | Ověř absolutní existující root/cwd/executable, NFC a shodný home. Neopravuj namespace normalizací. |
 | `NATIVE_SOURCE` | Zkontroluj podporovanost/čitelnost settings, bez zveřejňování jejich obsahu. |
 | `NATIVE_CONFLICT`, `NATIVE_POLICY` | Routing/policy není doložená; neodstraňuj managed policy a nezaváděj bypass. |
-| `NATIVE_PROFILE_BUSY` | Jiná bridge úloha drží stejný profil déle než 30 sekund. Toto volání neodeslalo zadání; počkej na dokončení vlastníka. |
-| `NATIVE_PROFILE_LOCK` | Zámek nelze bezpečně získat nebo uvolnit. Nejdřív zkontroluj stav konverzace: chyba uvolnění může nastat i po dokončené odpovědi. |
+| `NATIVE_PROFILE_BUSY`, `NATIVE_PROFILE_LOCK` | Tyto chyby patří ke starší implementaci s profilovým zámkem. Nový bridge profil neserializuje; restartuj staré MCP servery a zkontroluj stav případné rozpracované konverzace. |
 | `NATIVE_AUTH` | Chybí podporovaná saved first-party metadata účtu Pro, Max nebo Team. Případné legitimní přihlášení je oddělený operátorský krok. |
 | `NATIVE_DIAGNOSTIC` | Metadata subprocess selhal nebo překročil limit; uchovej sanitizované důkazy, ne raw auth výstup. |
 | `NATIVE_DRIFT` | Změna zdrojů/identity před submission; viz reliability 47. Žádné retry-until-green. |
@@ -184,7 +193,7 @@ cesty, údaje účtu, text nativní diagnostiky nebo obsah politik.
 | `SAVED_ACCOUNT_CHANGED` | Nynější otisk účtu neodpovídá uložené konverzaci. Ověř zamýšlené přihlášení a organizaci. |
 | `SAVED_RUNTIME_CHANGED` | Uložené verzi, executable nebo profilu neodpovídá nynější runtime. |
 | `ACCOUNT_CHANGED` | Metadata účtu se změnila přímo během ověřování. |
-| `GLOBAL_METADATA_CHANGED`, `CREDENTIAL_METADATA_CHANGED` | Změnila se metadata globálního profilu nebo souboru přihlašovacích údajů; jejich obsah bridge nečetl. |
+| `GLOBAL_METADATA_CHANGED`, `CREDENTIAL_METADATA_CHANGED` | Změnil se chráněný obsah globální konfigurace nebo metadata souboru přihlašovacích údajů. Běžné povolené provozní zápisy globálního souboru tuto chybu nevyvolají. |
 | `EXECUTABLE_CHANGED`, `SETTINGS_CHANGED`, `SOURCES_CHANGED` | Změnil se executable, nastavení/cache nebo jiný sledovaný zdroj. Ověř změnu; obecný důvod neurčuje konkrétní soubor. |
 
 Běžné osobní preference (`modelSettings` pouze s `effortLevel`, nastavení rozhraní,
@@ -230,20 +239,14 @@ dostatečně dlouhý; Codex instalátor nastavuje startup 30 s a tool timeout
 Konkurent stejné konverzace dostane `CONVERSATION_BUSY`. Lock obsahuje PID,
 hostname a čas, automaticky se nepřebírá. Teprve po ověření smrti původního serveru
 **i dítěte** lze řešit konkrétní osiřelý lock; pending/uncertain tím nezmizí.
-Různá conversation ID i různé aktualizované MCP servery koordinuje společný
-soubor `.claude-bridge-runtime.lock` přímo ve fyzickém nativním profilu. Zámek
-se drží od začátku preflightu přes běh modelu až po uložení výsledku; chrání tak
-i před zápisy metadat druhého bridge procesu. Native doctor používá stejný zámek.
-Čekání je zrušitelné a omezené na 30 sekund, potom volání vrátí
-`NATIVE_PROFILE_BUSY` bez odeslání zadání. Různé profily se navzájem neblokují.
-Status a přesný replay dokončené odpovědi profilový zámek nepotřebují.
-
-Profilový zámek obsahuje PID, náhodný identifikátor a čas, nikoli údaje účtu.
-Po pádu se automaticky nepřebírá. Před ručním odstraněním konkrétního osiřelého
-zámku ověř ukončení vlastníka i jeho nativního dítěte a stav konverzace. Za běhu
-zámek nenahrazuj ani nemaž. Koordinace neomezuje samostatně spuštěné Claude CLI,
-starší bridge procesy ani ruční úpravy profilu; jejich změny stále mohou vyvolat
-`NATIVE_DRIFT`. Po aktualizaci proto restartuj používané MCP servery.
+Různá conversation ID mohou běžet paralelně nad stejným nativním profilem,
+i z více Codex CLI/MCP procesů a vedle samostatně spuštěných Claude CLI.
+Profilový zámek ani třicetisekundová fronta se nepoužívají. Provozní zápisy
+ostatních relací toleruje sémantická kontrola globální konfigurace; skutečná
+změna přihlášení, oprávnění, politik nebo jiného chráněného obsahu se dál odmítá.
+Konverzační zámek zabraňuje pouze dvěma současným tahům stejné historie ve
+stejném úložišti stavu. Po aktualizaci restartuj MCP servery, aby neběžela stará
+implementace s profilovým zámkem a kontrolou každého zápisu `.claude.json`.
 
 Otisk účtu zahrnuje nativní metadata UUID účtu, e-mailu, organizace a typu
 předplatného i identitu profilu. Změna tohoto otisku sama o sobě nedokazuje,
@@ -266,6 +269,10 @@ garance při poruše disku. Automatické mazání profilů/transcriptů bridge n
 
 <a id="reliability-47"></a>
 ## Reliability 47: neuzavřené NATIVE_DRIFT
+
+Následující záznam popisuje historické kontroly metadat souboru před zavedením
+sémantické kontroly. Nová kontrola řeší doložené kolize provozních zápisů, nikoli
+zpětné vysvětlení všech historických chyb nesouvisejících s globální konfigurací.
 
 Historicky Q-A2 integration běh měl **26 PASS / 4 FAIL**, další nezměněné běhy
 30/30. První nezávislé probes měly 5/7, následně 7/7. Spontánní chyby na

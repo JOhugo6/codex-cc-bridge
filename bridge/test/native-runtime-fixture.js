@@ -38,6 +38,27 @@ function emptyRegistry() {
   return ['LocalMachine', 'CurrentUser'].flatMap(hive => ['Registry64', 'Registry32'].map(view => ({ hive, view, present: false })));
 }
 
+// Private fd seam for bounded semantic global snapshots. Never authorize an fd
+// read of credential stores or any path outside the exact synthetic globals.
+function globalHandles(globals, onRead = () => {}) {
+  const handles = new Map();
+  const owned = fd => { assert.ok(handles.has(fd), 'unowned synthetic global fd'); return handles.get(fd); };
+  return {
+    openSync(file, flags) {
+      const filename = path.resolve(file);
+      assert.ok(globals().includes(filename), 'only exact owned synthetic global config may be opened');
+      assert.equal(flags, 'r');
+      const fd = syncFs.openSync(filename, flags); handles.set(fd, filename); return fd;
+    },
+    fstatSync(fd) { owned(fd); return syncFs.fstatSync(fd); },
+    readSync(fd, buffer, offset, length, position) {
+      const filename = owned(fd); onRead(filename);
+      return syncFs.readSync(fd, buffer, offset, length, position);
+    },
+    closeSync(fd) { owned(fd); try { return syncFs.closeSync(fd); } finally { handles.delete(fd); } },
+  };
+}
+
 async function synthetic({ native = false, defaultRoot = false, tier = 'max' } = {}) {
   const base = native ? await fixture() : null;
   // Canonicalize our new unit root before profile paths and containment checks.
@@ -58,6 +79,7 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
   const api = internals();
   const reads = [], stats = [], calls = [];
   const registered = emptyRegistry();
+  const globalFiles = new Set();
   let account = { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', subscriptionType: tier, email: EMAIL, orgId: 'synthetic-org' };
   let beforeExecute, doctorOutput, doctorStderr = '';
   // Reject any accidental real config/credential read, including through a future adapter change.
@@ -72,11 +94,12 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
     async realpath(p) { allowed(p); return fs.realpath(p); },
     async readdir(p) { allowed(p); return fs.readdir(p); },
     async readFile(p, encoding) {
-      allowed(p); assert.ok(!/\.credentials\.json$|\.claude\.json$|[\\/]Anthropic[\\/]/i.test(p), 'adapter must not read credential-bearing configuration');
+      allowed(p); assert.ok(!/\.credentials\.json$|\.claude\.json$|[\\/]Anthropic[\\/]/i.test(p), 'global configuration requires the bounded handle reader; credential stores must not be read');
       reads.push(path.resolve(p)); return fs.readFile(p, encoding);
     },
   };
   const checkedSyncFs = {
+    ...globalHandles(() => [...globalFiles], filename => reads.push(filename)),
     lstatSync(file) {
       const p = path.resolve(file);
       // Ancestor identity checks are metadata-only, never real settings/credentials.
@@ -87,7 +110,7 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
     readdirSync(p) { allowed(p); return syncFs.readdirSync(p); },
     readFileSync(p, encoding) {
       allowed(p);
-      assert.equal(path.basename(p), 'policy-limits.json', 'only policy-limits cache content may be read synchronously');
+      assert.equal(path.basename(p), 'policy-limits.json', 'global configuration requires the bounded handle reader');
       reads.push(path.resolve(p));
       return syncFs.readFileSync(p, encoding);
     },
@@ -127,7 +150,13 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
   }
   await login();
   const globalFile = path.join(defaultRoot ? root : config, '.claude.json');
+  globalFiles.add(globalFile);
   await json(path.relative(root, globalFile), { hasCompletedOnboarding: true,
+    // Saved-profile native tests begin after the current CLI's onboarding
+    // migrations, without an inference warmup or a protected-drift exception.
+    ...(native ? { opusProMigrationComplete: true, sonnet1m45MigrationComplete: true,
+      hasResetAutoModeOptInForDefaultOffer: true, migrationVersion: 14,
+      userID: 'synthetic-initialized-user', cachedExtraUsageDisabledReason: null } : {}),
     oauthAccount: { accountUuid: '11111111-1111-4111-8111-111111111111', emailAddress: EMAIL, organizationUuid: '22222222-2222-4222-8222-222222222222' },
     projects: { [project]: { hasTrustDialogAccepted: true }, [project.replaceAll('\\', '/')]: { hasTrustDialogAccepted: true } } });
   const children = new Set();
@@ -157,6 +186,14 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
   }
   return { root, config, project, appdata, managed, globalFile, executable, parentEnv, api, deps, reads, stats, calls, registered,
     json, text, login, base, runPrepared,
+    async allowGlobal(file) {
+      const filename = allowed(file);
+      assert.equal(path.basename(filename), '.claude.json');
+      const stat = await fs.lstat(filename);
+      assert.ok(stat.isFile() && !stat.isSymbolicLink(), 'registered global must be a regular owned file');
+      assert.equal(await fs.realpath(filename), filename, 'registered global cannot traverse a link');
+      globalFiles.add(filename);
+    },
     get account() { return account; }, set account(value) { account = value; },
     set doctorOutput(value) { doctorOutput = value; },
     set doctorStderr(value) { doctorStderr = value; },
@@ -192,4 +229,4 @@ function refusal(res, model) {
   emit('message_delta', { delta: { stop_reason: 'refusal', stop_sequence: null, stop_details: { type: 'refusal', category: 'cyber', explanation: 'Synthetic offline fixture; no unsafe task.' } }, usage: { output_tokens: 6 } });
   emit('message_stop', {}); res.end();
 }
-module.exports = { nativeExecutable, synthetic, internals, emptyRegistry, inference, assertWire, reply, refusal, SENTINEL, EMAIL };
+module.exports = { nativeExecutable, synthetic, internals, emptyRegistry, globalHandles, inference, assertWire, reply, refusal, SENTINEL, EMAIL };

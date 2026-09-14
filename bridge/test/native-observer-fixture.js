@@ -29,12 +29,20 @@ function instrument(api) {
       return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative : `outside-${digest(resolved)}`;
     };
     let phase = 'sources';
+    const globalDescriptors = new Map();
     const stamp = s => ({ dev: String(s.dev), ino: String(s.ino), mode: s.mode, size: s.size,
       mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, birthtimeMs: s.birthtimeMs, directory: s.isDirectory(), symlink: s.isSymbolicLink() });
     const observe = (kind, file, value) => {
-      if (kind.toLowerCase().includes('readfile')) {
+      if (kind === 'openSync') {
+        globalDescriptors.set(value, file); record({ phase, file: label(file), kind });
+      } else if (['fstatSync', 'readSync', 'closeSync'].includes(kind)) {
+        const filename = globalDescriptors.get(file);
+        if (!filename) throw new Error('Unowned fd in synthetic observer');
+        record({ phase, file: label(filename), kind });
+        if (kind === 'closeSync') globalDescriptors.delete(file);
+      } else if (kind.toLowerCase().includes('readfile')) {
         // Existing checkedFs forbids credential content; do not initiate reads.
-        if (/\.credentials\.json$|\.claude\.json$|[\\/]Anthropic[\\/]/i.test(String(file))) throw new Error('Unexpected credential read in private seam');
+        if (/\.credentials\.json$|\.claude\.json$|[\\/]Anthropic[\\/]/i.test(String(file))) throw new Error('Unexpected unbounded global or credential read in private seam');
         record({ phase, file: label(file), kind, sha256: digest(value) });
       } else if (kind.toLowerCase().includes('readdir')) {
         const names = value.map(v => typeof v === 'string' ? v : v.name).sort();
@@ -44,7 +52,7 @@ function instrument(api) {
     const wrapFs = (source, synchronous) => Object.fromEntries(Object.entries(source).map(([name, fn]) => [name,
       synchronous ? function (...args) {
         try { const value = fn.apply(source, args); observe(name, args[0], value); return value; }
-        catch (e) { record({ phase, kind: name, file: label(args[0]), error: ['ENOENT', 'ENOTDIR'].includes(e.code) ? e.code : 'ERROR' }); throw e; }
+        catch (e) { record({ phase, kind: name, file: typeof args[0] === 'number' ? 'global-fd' : label(args[0]), error: ['ENOENT', 'ENOTDIR'].includes(e.code) ? e.code : 'ERROR' }); throw e; }
       } : async function (...args) {
         try { const value = await fn.apply(source, args); observe(name, args[0], value); return value; }
         catch (e) { record({ phase, kind: name, file: label(args[0]), error: ['ENOENT', 'ENOTDIR'].includes(e.code) ? e.code : 'ERROR' }); throw e; }

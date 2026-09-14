@@ -26,7 +26,6 @@ class ClaudeBridge {
   }
   async turn(input, signal) {
     let release;
-    let releaseProfile;
     try {
       const { conversation_id: id, message, working_dir, request_id, model } = input;
       validateId(id);
@@ -66,9 +65,6 @@ class ClaudeBridge {
         .filter(([key]) => key.toUpperCase() !== 'CLAUDE_CONFIG_DIR'));
       const runtime = this.createRuntime({ executable: this.settings.command, parentEnv,
         ...(this.settings.configRoot === undefined ? {} : { configRoot: this.settings.configRoot }) });
-      // Coordinate native metadata and task writes across conversations and MCP
-      // servers. Cached replay above remains independent of native availability.
-      releaseProfile = await runtime.acquire?.(signal);
       const prepared = await runtime.preflight({ cwd, model: selectedModel,
         ...(st ? { expectedIdentity: st.runtime } : {}) });
       validateIdentity(prepared.identity);
@@ -120,10 +116,7 @@ class ClaudeBridge {
         throw sanitized;
       }
     } catch (err) { throw safeError(err); }
-    finally {
-      try { if (releaseProfile) await releaseProfile(); }
-      finally { if (release) await release(); }
-    }
+    finally { if (release) await release(); }
   }
   async status(id) {
     const st = await this.store.load(id);

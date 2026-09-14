@@ -39,7 +39,10 @@ test('changed source categories expose no path, metadata or credentials and bloc
     await withFixture(async f => {
       const prepared = await f.runtime().preflight({ cwd: f.project });
       const file = relative === 'executable' ? f.executable : path.join(f.config, relative);
-      await fs.appendFile(file, SENTINEL);
+      if (relative === '.claude.json') {
+        const existing = JSON.parse(await fs.readFile(file, 'utf8'));
+        await fs.writeFile(file, JSON.stringify({ ...existing, unknownProtectedField: SENTINEL }));
+      } else await fs.appendFile(file, SENTINEL);
       let launched = false;
       await assert.rejects(prepared.launch(() => { launched = true; }), err => {
         assert.ok(!JSON.stringify({ ...err, message: err.message }).includes(f.root));

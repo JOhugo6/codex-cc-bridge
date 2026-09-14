@@ -228,6 +228,7 @@ test('explicit existing profile drift and exact root spelling cannot replace ses
     await b.turn(first(f.project));
     const before = await contents(b);
     await f.json('other-profile/.claude.json', { oauthAccount: { emailAddress: 'synthetic@example.invalid' } });
+    await f.allowGlobal(path.join(f.root, 'other-profile/.claude.json'));
     for (const configRoot of [path.join(f.root, 'other-profile'), f.config.replaceAll('\\', '/')]) {
       if (configRoot === f.config) continue;
       const changed = new ClaudeBridge({ run: () => assert.fail('profile drift must not launch') }, { ...settings, configRoot }, runtime);

@@ -56,7 +56,7 @@ function safeError(err) {
       SAVED_ACCOUNT_CHANGED: 'The saved conversation account fingerprint differs from the current native login metadata. Verify the intended account and organization. Restore the original login to continue, or use a new conversation_id only for an intended identity change. No task submitted.',
       SAVED_RUNTIME_CHANGED: 'The saved conversation runtime or profile differs from the current configuration. Restore the original runtime/profile, or use a new conversation_id only for an intended change. No task submitted.',
       ACCOUNT_CHANGED: 'Native account metadata changed during validation. Verify the native login and organization before retrying. No task submitted.',
-      GLOBAL_METADATA_CHANGED: 'Native global profile metadata changed during validation. Wait for other native activity to finish and run preflight again. No task submitted.',
+      GLOBAL_METADATA_CHANGED: 'Protected native global configuration changed during validation. Inspect account, permissions and other configuration changes before retrying. No task submitted.',
       CREDENTIAL_METADATA_CHANGED: 'Native credential file metadata changed during validation. Verify the native login before retrying. No task submitted.',
       EXECUTABLE_CHANGED: 'Native executable changed during validation. Verify the installed version and run preflight again. No task submitted.',
       SETTINGS_CHANGED: 'Native settings or policy cache sources changed during validation. Inspect the intended settings and run preflight again. No task submitted.',
