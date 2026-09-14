@@ -131,7 +131,13 @@ policy. Bridge současně vyžaduje čerstvé potvrzení `304 Not Modified` pro 
 existující cache, validuje jejich obsah a kontroluje jejich neměnnost. Nativní
 obnovení času souboru `policy-limits.json` při odpovědi 304 je přípustné, pouze
 pokud zůstane zachovaná identita, velikost a hash obsahu souboru. Pouhé
-`Loaded`, rozpracované načítání ani stará lokální cache tuto kontrolu nesplňují.
+`Loaded` ani stará lokální cache tuto kontrolu nesplňují. Řádek remote settings
+ve výstupu `doctor` je snímek pořízený před dokončením síťové kontroly: může
+ještě hlásit „checking“, i když tentýž proces následně potvrdí obě cache.
+Takový výsledek lze přijmout pouze s úplnou čtveřicí úspěšných 304 markerů
+ze stejného dokončeného procesu a při zachování kontrol zdrojů. Samotné
+„checking“ bez těchto potvrzení se dál odmítá. Restartování diagnostiky kvůli
+starému stavovému řádku není potřeba; nový proces by mohl znovu zobrazit stejný snímek.
 Diagnostické debug výstupy zůstávají interní a omezené velikostí; veřejný výstup
 neobsahuje jejich text, tokeny ani obsah organizačních pravidel.
 
@@ -160,9 +166,26 @@ kontroly se startem task procesu.
 | `NATIVE_ROOT`, `NATIVE_INPUT` | Ověř absolutní existující root/cwd/executable, NFC a shodný home. Neopravuj namespace normalizací. |
 | `NATIVE_SOURCE` | Zkontroluj podporovanost/čitelnost settings, bez zveřejňování jejich obsahu. |
 | `NATIVE_CONFLICT`, `NATIVE_POLICY` | Routing/policy není doložená; neodstraňuj managed policy a nezaváděj bypass. |
+| `NATIVE_PROFILE_BUSY` | Jiná bridge úloha drží stejný profil déle než 30 sekund. Toto volání neodeslalo zadání; počkej na dokončení vlastníka. |
+| `NATIVE_PROFILE_LOCK` | Zámek nelze bezpečně získat nebo uvolnit. Nejdřív zkontroluj stav konverzace: chyba uvolnění může nastat i po dokončené odpovědi. |
 | `NATIVE_AUTH` | Chybí podporovaná saved first-party metadata účtu Pro, Max nebo Team. Případné legitimní přihlášení je oddělený operátorský krok. |
 | `NATIVE_DIAGNOSTIC` | Metadata subprocess selhal nebo překročil limit; uchovej sanitizované důkazy, ne raw auth výstup. |
 | `NATIVE_DRIFT` | Změna zdrojů/identity před submission; viz reliability 47. Žádné retry-until-green. |
+
+Chybová odpověď může vedle původního `code` obsahovat bezpečný statický `reason`.
+MCP, status uložené chyby i native doctor zachovají pouze povolené důvody, nikoli
+cesty, údaje účtu, text nativní diagnostiky nebo obsah politik.
+
+| `reason` | Význam a další krok |
+|---|---|
+| `POLICY_STATUS`, `POLICY_FAILED` | Nativní stav je nepodporovaný/konfliktní nebo kontrola ohlásila selhání či změnu politik. Ověř stav nativního přihlášení a organizačních politik. |
+| `POLICY_UNATTESTED` | Chybí jednoznačné čerstvé potvrzení obou Team cache; samotné „loaded“ ani „checking“ nestačí. |
+| `POLICY_CACHE_MISSING` | Chybí existující Team cache; bridge ji automaticky nezakládá. |
+| `SAVED_ACCOUNT_CHANGED` | Nynější otisk účtu neodpovídá uložené konverzaci. Ověř zamýšlené přihlášení a organizaci. |
+| `SAVED_RUNTIME_CHANGED` | Uložené verzi, executable nebo profilu neodpovídá nynější runtime. |
+| `ACCOUNT_CHANGED` | Metadata účtu se změnila přímo během ověřování. |
+| `GLOBAL_METADATA_CHANGED`, `CREDENTIAL_METADATA_CHANGED` | Změnila se metadata globálního profilu nebo souboru přihlašovacích údajů; jejich obsah bridge nečetl. |
+| `EXECUTABLE_CHANGED`, `SETTINGS_CHANGED`, `SOURCES_CHANGED` | Změnil se executable, nastavení/cache nebo jiný sledovaný zdroj. Ověř změnu; obecný důvod neurčuje konkrétní soubor. |
 
 Běžné osobní preference (`modelSettings` pouze s `effortLevel`, nastavení rozhraní,
 agent teams a uložené MCP definice) samy o sobě nejsou konflikt routingu.
@@ -207,7 +230,29 @@ dostatečně dlouhý; Codex instalátor nastavuje startup 30 s a tool timeout
 Konkurent stejné konverzace dostane `CONVERSATION_BUSY`. Lock obsahuje PID,
 hostname a čas, automaticky se nepřebírá. Teprve po ověření smrti původního serveru
 **i dítěte** lze řešit konkrétní osiřelý lock; pending/uncertain tím nezmizí.
-Různá conversation ID mohou sdílet nativní profil, nejsou globálně serializovaná.
+Různá conversation ID i různé aktualizované MCP servery koordinuje společný
+soubor `.claude-bridge-runtime.lock` přímo ve fyzickém nativním profilu. Zámek
+se drží od začátku preflightu přes běh modelu až po uložení výsledku; chrání tak
+i před zápisy metadat druhého bridge procesu. Native doctor používá stejný zámek.
+Čekání je zrušitelné a omezené na 30 sekund, potom volání vrátí
+`NATIVE_PROFILE_BUSY` bez odeslání zadání. Různé profily se navzájem neblokují.
+Status a přesný replay dokončené odpovědi profilový zámek nepotřebují.
+
+Profilový zámek obsahuje PID, náhodný identifikátor a čas, nikoli údaje účtu.
+Po pádu se automaticky nepřebírá. Před ručním odstraněním konkrétního osiřelého
+zámku ověř ukončení vlastníka i jeho nativního dítěte a stav konverzace. Za běhu
+zámek nenahrazuj ani nemaž. Koordinace neomezuje samostatně spuštěné Claude CLI,
+starší bridge procesy ani ruční úpravy profilu; jejich změny stále mohou vyvolat
+`NATIVE_DRIFT`. Po aktualizaci proto restartuj používané MCP servery.
+
+Otisk účtu zahrnuje nativní metadata UUID účtu, e-mailu, organizace a typu
+předplatného i identitu profilu. Změna tohoto otisku sama o sobě nedokazuje,
+která položka se změnila. Uložený souhrnný hash nelze zpětně rozložit. Bridge
+proto nepřepisuje identitu konverzace podle současného přihlášení, a to ani
+u `ready` konverzace s `turn: 0`. Pokud byla změna přihlášení záměrná, pro práci
+pod novou identitou vytvoř vědomě novou konverzaci a předej celé zadání znovu.
+Pokud záměrná nebyla, nejprve ověř správný nativní účet a profil. Nové ID není
+obnova předchozí historie ani oprava neověřené organizační politiky.
 
 `CORRUPT_STATE` není prázdná historie. Nemaž stav jako cache; jeho ztrátu nelze
 odlišit od nového conversation ID. Bridge stav i odpovídající nativní transcript

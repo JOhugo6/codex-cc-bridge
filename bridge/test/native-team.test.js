@@ -60,6 +60,35 @@ test('actual native Team rejects missing remote freshness and never submits infe
   assert.equal(inference({ base: tls }).length, 0);
 });
 
+test('actual native Team completes delayed 304 policy attestation despite an early checking snapshot', { timeout: 120000 }, async t => {
+  const { f, tls } = await fixture(t);
+  tls.setResponder(async (r, res) => {
+    if (!r.url.startsWith('/api/claude_code/settings') && !r.url.startsWith('/api/claude_code/policy_limits')) return false;
+    assert.match(r.etag, /^"sha256:[a-f0-9]{64}"$/);
+    // Doctor prints the remote status before awaiting organization policy.
+    // Hold that wait longer so the remote 304 completes after the snapshot.
+    await new Promise(resolve => setTimeout(resolve, r.url.startsWith('/api/claude_code/settings') ? 500 : 1500));
+    res.writeHead(304).end();
+    return true;
+  });
+  const execute = f.deps.execute;
+  const doctors = [];
+  f.deps.execute = async (...args) => {
+    const result = await execute(...args);
+    if (args[1].includes('doctor')) doctors.push(result);
+    return result;
+  };
+  const p = await f.runtime().preflight({ cwd: f.project });
+  await p.launch(() => {});
+  assert.equal(doctors.length, 2, 'preflight and launch each complete a single fresh doctor');
+  for (const result of doctors) {
+    assert.match(result.stdout, /Managed settings \(remote\): checking… \(fetch in progress; re-run in a moment\)/);
+    for (const marker of ['Remote settings: Using cached settings (304)', 'Remote settings: Cache still valid (304 Not Modified)',
+      'Policy limits: Using cached restrictions (304)', 'Policy limits: Cache still valid (304 Not Modified)']) assert.ok(result.stderr.includes(marker));
+  }
+  assert.equal(inference({ base: tls }).length, 0);
+});
+
 test('actual native Team policy edits between preparation and launch prevent submission', { timeout: 120000 }, async t => {
   const { f, tls } = await fixture(t);
   const p = await f.runtime().preflight({ cwd: f.project });

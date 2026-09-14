@@ -39,11 +39,11 @@ async function rehearse(open, cwd, marker) {
   const call = async (name, args) => {
     const response = await client.callTool({ name, arguments: args }, undefined, { timeout: 180000 });
     if (response.isError) {
-      // Whitelist only known bridge error codes, never raw content or auth output.
-      let code;
-      try { code = JSON.parse(response.content?.[0]?.text).code; } catch { /* no raw diagnostic */ }
-      const safe = safeError({ code });
-      throw failure(safe.code === 'BRIDGE_ERROR' ? 'SMOKE_CALL' : safe.code);
+      // Preserve only allowlisted bridge codes/reasons and locally generated messages.
+      let parsed;
+      try { parsed = JSON.parse(response.content?.[0]?.text); } catch { /* no raw diagnostic */ }
+      const safe = safeError(parsed);
+      throw safe.code === 'BRIDGE_ERROR' ? failure('SMOKE_CALL') : safe;
     }
     if (!response.structuredContent) throw failure('SMOKE_CALL');
     return response.structuredContent;
@@ -109,8 +109,10 @@ async function main(args = process.argv.slice(2), env = process.env) {
   } catch (err) {
     const knownSmoke = ['SMOKE_DIRECTORY', 'SMOKE_IDENTITY', 'SMOKE_MODEL_EVIDENCE', 'SMOKE_TOOL_DENIAL',
       'SMOKE_TOOL_POLICY', 'SMOKE_CALL', 'SMOKE_FIRST', 'SMOKE_REPLAY', 'SMOKE_CONTINUITY', 'SMOKE_STATUS'];
-    code = knownSmoke.includes(err?.code) ? err.code : safeError(err).code;
+    const safe = safeError(err);
+    code = knownSmoke.includes(err?.code) ? err.code : safe.code;
     process.stderr.write(JSON.stringify({ ok: false, code, model: MODEL, task_submitted: 'unknown',
+      ...(safe.reason ? { reason: safe.reason, message: safe.message } : {}),
       ...(root ? { retained_smoke_directory: root } : {}),
       note: 'No retry or fallback. Inspect retained smoke state/native transcript; native profile was not cleaned.' }) + '\n');
     return 1;

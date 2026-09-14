@@ -26,6 +26,7 @@ class ClaudeBridge {
   }
   async turn(input, signal) {
     let release;
+    let releaseProfile;
     try {
       const { conversation_id: id, message, working_dir, request_id, model } = input;
       validateId(id);
@@ -65,6 +66,9 @@ class ClaudeBridge {
         .filter(([key]) => key.toUpperCase() !== 'CLAUDE_CONFIG_DIR'));
       const runtime = this.createRuntime({ executable: this.settings.command, parentEnv,
         ...(this.settings.configRoot === undefined ? {} : { configRoot: this.settings.configRoot }) });
+      // Coordinate native metadata and task writes across conversations and MCP
+      // servers. Cached replay above remains independent of native availability.
+      releaseProfile = await runtime.acquire?.(signal);
       const prepared = await runtime.preflight({ cwd, model: selectedModel,
         ...(st ? { expectedIdentity: st.runtime } : {}) });
       validateIdentity(prepared.identity);
@@ -110,13 +114,16 @@ class ClaudeBridge {
       } catch (err) {
         const sanitized = safeError(err);
         const failed = submitted ? { ...pending, status: 'uncertain',
-          last_error: { code: sanitized.code, message: sanitized.message } } : st;
+          last_error: { code: sanitized.code, message: sanitized.message, ...(sanitized.reason ? { reason: sanitized.reason } : {}) } } : st;
         // If restoration itself fails, the durable pending marker remains safe.
         await this.store.save(id, failed).catch(() => {});
         throw sanitized;
       }
     } catch (err) { throw safeError(err); }
-    finally { if (release) await release(); }
+    finally {
+      try { if (releaseProfile) await releaseProfile(); }
+      finally { if (release) await release(); }
+    }
   }
   async status(id) {
     const st = await this.store.load(id);
@@ -127,7 +134,7 @@ class ClaudeBridge {
       turn: st.turn, status: st.status, model: st.model, policy: st.policy,
       runtime: st.version === 2 ? st.runtime : null,
       pending: st.pending || null,
-      last_error: st.last_error ? { code: safeError(st.last_error).code, message: safeError(st.last_error).message } : null,
+      last_error: st.last_error ? { code: safeError(st.last_error).code, message: safeError(st.last_error).message, ...(safeError(st.last_error).reason ? { reason: safeError(st.last_error).reason } : {}) } : null,
       last_result: st.last_result || null,
       state_file: this.store.file(id),
     };

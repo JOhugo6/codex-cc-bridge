@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 const path = require('node:path');
+const { safeError } = require('./lib/config');
 const { isDeepStrictEqual } = require('node:util');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
@@ -15,7 +16,7 @@ Success checks compatibility/profile eligibility, not live credentials or model 
 `;
 const NATIVE_CODES = new Set(['NATIVE_INPUT', 'NATIVE_MODEL', 'NATIVE_SOURCE', 'NATIVE_CONFLICT',
   'NATIVE_ROOT', 'NATIVE_PLATFORM', 'NATIVE_COMPATIBILITY', 'NATIVE_AUTH', 'NATIVE_POLICY',
-  'NATIVE_DIAGNOSTIC', 'NATIVE_DRIFT']);
+  'NATIVE_DIAGNOSTIC', 'NATIVE_DRIFT', 'NATIVE_PROFILE_LOCK', 'NATIVE_PROFILE_BUSY']);
 const failure = code => Object.assign(new Error(code), { code });
 
 // Retained for existing MCP tests/callers, not a CLI transport override.
@@ -92,15 +93,18 @@ async function nativeDiagnostic(options, env) {
   const model = resolveModel(options.model, settings.model);
   const runtime = createNativeRuntime({ executable: settings.command, parentEnv,
     ...(settings.configRoot === undefined ? {} : { configRoot: settings.configRoot }) });
-  const prepared = await runtime.preflight({ cwd: options.cwd || process.cwd(), model });
-  validateIdentity(prepared.identity);
-  // Never call launch or recheck: no task, stdin, pending state or inference.
-  const identity = prepared.identity;
-  return { ok: true, mode: 'native-preflight', contract: identity.contract, version: identity.version,
-    model: identity.model, profile_mode: identity.configRootMode,
-    executable_fingerprint: identity.executableFingerprint, account_fingerprint: identity.accountFingerprint,
-    task_submitted: false, live_credentials_verified: false, model_entitlement_verified: false,
-    note: 'Compatibility, saved-login metadata, and account policy only; native ancillary network and local metadata writes are possible.' };
+  const release = await runtime.acquire?.();
+  try {
+    const prepared = await runtime.preflight({ cwd: options.cwd || process.cwd(), model });
+    validateIdentity(prepared.identity);
+    // Never call launch or recheck: no task, stdin, pending state or inference.
+    const identity = prepared.identity;
+    return { ok: true, mode: 'native-preflight', contract: identity.contract, version: identity.version,
+      model: identity.model, profile_mode: identity.configRootMode,
+      executable_fingerprint: identity.executableFingerprint, account_fingerprint: identity.accountFingerprint,
+      task_submitted: false, live_credentials_verified: false, model_entitlement_verified: false,
+      note: 'Compatibility, saved-login metadata, and account policy only; native ancillary network and local metadata writes are possible.' };
+  } finally { if (release) await release(); }
 }
 
 async function main(args = process.argv.slice(2), env = process.env) {
@@ -126,7 +130,7 @@ async function main(args = process.argv.slice(2), env = process.env) {
     // Never print exception messages/stacks, raw auth output, env values or paths.
     const code = NATIVE_CODES.has(err?.code) || ['DOCTOR_ARGUMENTS', 'MCP_SCHEMA', 'MCP_HANDSHAKE', 'INVALID_CONFIG'].includes(err?.code)
       ? err.code : 'DOCTOR_FAILED';
-    process.stderr.write(JSON.stringify({ ok: false, mode, code, task_submitted: false,
+    process.stderr.write(JSON.stringify({ ok: false, mode, code, ...(safeError(err).reason ? { reason: safeError(err).reason, message: safeError(err).message } : {}), task_submitted: false,
       live_credentials_verified: false, model_entitlement_verified: false,
       note: 'No inference attempted. See --help and docs/runbook.md; do not bypass policy or automatically retry drift.' }) + '\n');
     return 1;

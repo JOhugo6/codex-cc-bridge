@@ -22,7 +22,7 @@ async function main(createBackend = settings => new ClaudeBackend(settings), cre
       return { structuredContent: output, content: [{ type: 'text', text: JSON.stringify(output) }] };
     } catch (err) {
       err = safeError(err);
-      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: err.code || 'BRIDGE_ERROR', message: err.message }) }] };
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: err.code || 'BRIDGE_ERROR', message: err.message, ...(err.reason ? { reason: err.reason } : {}) }) }] };
     }
   };
   server.registerTool('claude_turn', {

@@ -31,6 +31,8 @@ function safeError(err) {
     SESSION_ID_DRIFT: 'Claude returned a different session identity. The original session was preserved.',
     MODEL_DRIFT: 'Structured native usage reports a model other than the pinned model. No fallback is allowed.',
     NATIVE_INPUT: 'Invalid native runtime input.',
+    NATIVE_PROFILE_BUSY: 'Native profile is busy with another bridge request. Wait for that request to finish before retrying. No task submitted.',
+    NATIVE_PROFILE_LOCK: 'Native profile lock is unavailable or invalid. Inspect persisted conversation status, active bridge processes and the profile lock before manual recovery.',
     NATIVE_MODEL: 'Unsupported model. Select a model from the verified native runtime catalog.',
     NATIVE_SOURCE: 'Native settings source is malformed, unreadable, or unsupported.',
     NATIVE_CONFLICT: 'Native routing, authentication, or dynamic policy conflicts with this runtime.',
@@ -43,7 +45,26 @@ function safeError(err) {
     NATIVE_DRIFT: 'Native sources or profile identity changed before submission. Inspect status before retrying.',
   };
   const code = err && Object.hasOwn(messages, err.code) ? err.code : 'BRIDGE_ERROR';
-  return fail(code, messages[code] || 'Bridge operation failed. Inspect persisted status before retrying.');
+  const reasons = {
+    NATIVE_POLICY: {
+      POLICY_STATUS: 'Native policy diagnostics reported an unsupported or conflicting account policy status. No task submitted.',
+      POLICY_FAILED: 'Native policy refresh reported a failure or changed policy; a stable cached snapshot was not attested. No task submitted.',
+      POLICY_UNATTESTED: 'Native policy refresh did not provide exactly one 304 freshness and cache-adoption confirmation for both Team caches. No task submitted.',
+      POLICY_CACHE_MISSING: 'A required Team policy cache is missing. No task submitted.',
+    },
+    NATIVE_DRIFT: {
+      SAVED_ACCOUNT_CHANGED: 'The saved conversation account fingerprint differs from the current native login metadata. Verify the intended account and organization. Restore the original login to continue, or use a new conversation_id only for an intended identity change. No task submitted.',
+      SAVED_RUNTIME_CHANGED: 'The saved conversation runtime or profile differs from the current configuration. Restore the original runtime/profile, or use a new conversation_id only for an intended change. No task submitted.',
+      ACCOUNT_CHANGED: 'Native account metadata changed during validation. Verify the native login and organization before retrying. No task submitted.',
+      GLOBAL_METADATA_CHANGED: 'Native global profile metadata changed during validation. Wait for other native activity to finish and run preflight again. No task submitted.',
+      CREDENTIAL_METADATA_CHANGED: 'Native credential file metadata changed during validation. Verify the native login before retrying. No task submitted.',
+      EXECUTABLE_CHANGED: 'Native executable changed during validation. Verify the installed version and run preflight again. No task submitted.',
+      SETTINGS_CHANGED: 'Native settings or policy cache sources changed during validation. Inspect the intended settings and run preflight again. No task submitted.',
+      SOURCES_CHANGED: 'Native sources changed during validation. Inspect native settings and concurrent profile activity, then run preflight again. No task submitted.',
+    },
+  };
+  const reason = typeof err?.reason === 'string' && Object.hasOwn(reasons[code] || {}, err.reason) ? err.reason : undefined;
+  return Object.assign(fail(code, reason ? reasons[code][reason] : messages[code] || 'Bridge operation failed. Inspect persisted status before retrying.'), reason ? { reason } : {});
 }
 
 // Tool rules become individual argv values for a variadic native option. Never

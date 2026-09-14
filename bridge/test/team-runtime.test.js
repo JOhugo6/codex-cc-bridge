@@ -6,6 +6,61 @@ const path = require('node:path');
 const { teamFixture, TEAM_DOCTOR, TEAM_DEBUG, REMOTE, POLICY } = require('./team-fixture');
 const { SENTINEL } = require('./native-runtime-fixture');
 const rejects = (...codes) => e => codes.includes(e.code) && !e.message.includes(SENTINEL);
+const TEAM_PENDING = TEAM_DOCTOR.replace('Managed settings (remote): loaded',
+  'Managed settings (remote): checking… (fetch in progress; re-run in a moment)');
+
+test('Team completed 304 attestation supersedes early pending snapshot through launch and continuation', async t => {
+  const f = await teamFixture(); t.after(() => f.close());
+  f.doctorOutput = TEAM_PENDING;
+  const p = await f.runtime().preflight({ cwd: f.project });
+  assert.equal(f.calls.filter(x => x.kind === 'doctor').length, 1, 'does not restart a completed doctor');
+  let submitted = false;
+  await p.launch(() => { submitted = true; });
+  assert.equal(submitted, true);
+  assert.equal(f.calls.filter(x => x.kind === 'doctor').length, 2, 'launch freshly attests once');
+  const again = await f.runtime().preflight({ cwd: f.project, expectedIdentity: p.identity });
+  assert.deepEqual(again.identity, p.identity);
+});
+
+test('Team early pending snapshot never substitutes for complete fresh cache evidence', async t => {
+  const f = await teamFixture(); t.after(() => f.close());
+  const markers = TEAM_DEBUG.trimEnd().split('\n');
+  for (const stderr of ['', ...markers.map(m => TEAM_DEBUG.replace(m + '\n', '')),
+    TEAM_DEBUG + '[DEBUG] Policy limits: Failed to load restrictions\n',
+    TEAM_DEBUG + '[DEBUG] Remote settings: Fetched settings from server (200)\n',
+    TEAM_DEBUG + markers[0] + '\n']) {
+    const p = await f.runtime().preflight({ cwd: f.project });
+    f.doctorOutput = TEAM_PENDING; f.doctorStderr = stderr;
+    let submitted = false;
+    const before = f.calls.filter(x => x.kind === 'doctor').length;
+    await assert.rejects(p.launch(() => { submitted = true; }), rejects('NATIVE_POLICY'));
+    assert.equal(submitted, false);
+    assert.equal(f.calls.filter(x => x.kind === 'doctor').length, before + 1, 'no retry after incomplete/failed evidence');
+    f.doctorOutput = TEAM_DOCTOR; f.doctorStderr = TEAM_DEBUG;
+  }
+  const p = await f.runtime().preflight({ cwd: f.project });
+  f.doctorOutput = TEAM_PENDING;
+  f.beforeExecute = async (_command, args) => {
+    if (args.includes('doctor')) await f.json('config/remote-settings.json', { ...REMOTE, permissions: { deny: ['Read'] } });
+  };
+  await assert.rejects(p.launch(() => assert.fail('unexpected submission')), rejects('NATIVE_DRIFT'));
+});
+
+test('Team policy diagnostic reasons distinguish status, failed refresh, incomplete evidence and missing caches', async t => {
+  const f = await teamFixture(); t.after(() => f.close());
+  for (const [stdout, stderr, reason] of [
+    [TEAM_DOCTOR.replace('Loaded from api.anthropic.com', 'unknown'), TEAM_DEBUG, 'POLICY_STATUS'],
+    [TEAM_PENDING, TEAM_DEBUG + `[DEBUG] Remote settings: Failed ${SENTINEL}\n`, 'POLICY_FAILED'],
+    [TEAM_PENDING, '', 'POLICY_UNATTESTED'],
+  ]) {
+    f.doctorOutput = stdout; f.doctorStderr = stderr;
+    await assert.rejects(f.runtime().preflight({ cwd: f.project }), e =>
+      e.code === 'NATIVE_POLICY' && e.reason === reason && !JSON.stringify(e).includes(SENTINEL) && !e.message.includes(SENTINEL));
+  }
+  f.doctorOutput = TEAM_DOCTOR; f.doctorStderr = TEAM_DEBUG;
+  await fs.unlink(path.join(f.config, 'remote-settings.json'));
+  await assert.rejects(f.runtime().preflight({ cwd: f.project }), { code: 'NATIVE_POLICY', reason: 'POLICY_CACHE_MISSING' });
+});
 
 test('saved Team account requires attested restrictions and preserves identity through recheck and continuation', async t => {
   const f = await teamFixture(); t.after(() => f.close());
@@ -30,7 +85,7 @@ test('saved Team account requires attested restrictions and preserves identity t
 test('Team rejects incomplete, failed, contradictory and unattested metadata without submission', async t => {
   const f = await teamFixture(); t.after(() => f.close());
   const failures = [
-    ['Managed settings (remote): checking… (fetch in progress; re-run in a moment)\nOrganization policy: Loaded from api.anthropic.com', TEAM_DEBUG],
+    ['Managed settings (remote): checking\nOrganization policy: Loaded from api.anthropic.com', TEAM_DEBUG],
     ['Managed settings (remote): loaded\nOrganization policy: Could not load organization policy', TEAM_DEBUG],
     [TEAM_DOCTOR + 'Managed settings (remote): failed\n', TEAM_DEBUG],
     [TEAM_DOCTOR + 'Organization policy: not applicable to Pro and Max accounts\n', TEAM_DEBUG],

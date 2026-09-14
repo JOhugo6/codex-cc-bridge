@@ -8,7 +8,8 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { fail } = require('./config');
+const { fail, safeError } = require('./config');
+const { acquireProfileLock } = require('./profile-lock');
 const { isSupportedVersion, parseVersionOutput } = require('./native-version');
 
 const RUNTIME_CONTRACT = 'native-windows-personal/2.1.263/v1';
@@ -23,7 +24,7 @@ const ORG_PERSONAL = 'Organization policy: not applicable to Pro and Max account
 const LIMIT = 256 * 1024;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const error = code => fail(code, {
+const error = (code, reason) => safeError(Object.assign(fail(code, {
   NATIVE_INPUT: 'Invalid native runtime input.',
   NATIVE_MODEL: 'Unsupported model. Select a model from the native runtime catalog.',
   NATIVE_SOURCE: 'Native settings source is malformed, unreadable, or unsupported. No task submitted.',
@@ -35,7 +36,7 @@ const error = code => fail(code, {
   NATIVE_POLICY: 'Native account policy eligibility or a fresh Team policy snapshot could not be established. No task submitted.',
   NATIVE_DIAGNOSTIC: 'Native metadata command failed or exceeded its bounds. No task submitted.',
   NATIVE_DRIFT: 'Native sources or profile identity changed before submission. Run preflight again.',
-}[code] || 'Native runtime validation failed.');
+}[code] || 'Native runtime validation failed.'), { reason: reason || (code === 'NATIVE_DRIFT' ? 'SOURCES_CHANGED' : undefined) }));
 
 function freeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -268,6 +269,14 @@ const production = { fs, syncFs, platform: process.platform, homedir: os.homedir
 // Record observations as sources are inspected, then check them without yielding.
 // Ancestor identity (not timestamps) detects directory/junction substitution without
 // treating normal native cache creation in a profile directory as policy drift.
+function sourceDriftReason(file) {
+  const name = path.basename(file).toLowerCase();
+  if (name === '.claude.json') return 'GLOBAL_METADATA_CHANGED';
+  if (name === '.credentials.json') return 'CREDENTIAL_METADATA_CHANGED';
+  if (name.endsWith('.exe')) return 'EXECUTABLE_CHANGED';
+  return 'SETTINGS_CHANGED';
+}
+
 function createSourceLedger(deps) {
   const sources = new Map(), ancestors = new Map(), inventories = new Map(), touchedCaches = new Set();
   const stamp = (s, file) => {
@@ -301,7 +310,7 @@ function createSourceLedger(deps) {
     record(file, value, nativeTouch = false) {
       if (nativeTouch) touchedCaches.add(file);
       const current = stamp(value, file);
-      if (sources.has(file) && sources.get(file) !== current) throw error('NATIVE_DRIFT');
+      if (sources.has(file) && sources.get(file) !== current) throw error('NATIVE_DRIFT', sourceDriftReason(file));
       sources.set(file, current);
     },
     inventory(dir, names) { inventories.set(dir, JSON.stringify(names)); },
@@ -311,7 +320,7 @@ function createSourceLedger(deps) {
         if (directoryStamp(stat(dir)) !== expected) throw error('NATIVE_DRIFT');
       }
       for (const [file, expected] of sources) {
-        if (stamp(stat(file), file) !== expected) throw error('NATIVE_DRIFT');
+        if (stamp(stat(file), file) !== expected) throw error('NATIVE_DRIFT', sourceDriftReason(file));
       }
       for (const [dir, expected] of inventories) {
         let names;
@@ -337,7 +346,7 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     const nativeTouch = cache === 'policy-limits.json';
     const s = await stat(file, nativeTouch);
     if (!s) {
-      if (context.teamPolicy && cache) throw error('NATIVE_POLICY');
+      if (context.teamPolicy && cache) throw error('NATIVE_POLICY', 'POLICY_CACHE_MISSING');
       entries.push([file, 'absent']); return;
     }
     if (s.isSymbolicLink() || !s.isFile()) throw error('NATIVE_SOURCE');
@@ -349,7 +358,7 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     parseSettings(text, managed, mcp, cache);
     const after = await stat(file, nativeTouch);
     const sourceStamp = nativeTouch ? cacheStamp : statStamp;
-    if (!after || sourceStamp(s) !== sourceStamp(after)) throw error('NATIVE_DRIFT');
+    if (!after || sourceStamp(s) !== sourceStamp(after)) throw error('NATIVE_DRIFT', sourceDriftReason(file));
     entries.push([file, sourceStamp(s), hash(text)]);
   }
   async function directory(dir, rejectPresence = false) {
@@ -463,8 +472,9 @@ function accountFingerprint(value, context) {
 }
 
 // Doctor's human-readable status is captured before its organization-policy wait.
-// A pending remote line is therefore retryable, but neither a failed fetch nor
-// source drift is. A loaded line alone is insufficient: a 200 response may be
+// Its pending remote line can remain in a successfully completed invocation;
+// starting another doctor merely captures another early status. A loaded line
+// alone is insufficient: a 200 response may be
 // applied in memory without being persisted. Require native's distinct HTTP 304
 // and cache-adoption markers for BOTH caches, observed in the same invocation.
 // This attests a fresh snapshot, not an atomic lock against later server updates.
@@ -475,16 +485,18 @@ function teamPolicyStatus(result) {
   const debug = result.stderr.split(/\r?\n/).map(s => s.match(/^(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?\[DEBUG\] (.*)$/)?.[1]).filter(Boolean);
   const policyDebug = debug.filter(s => /^(?:Remote settings|Policy limits): /.test(s));
   if (remote.length !== 1 || organization.length !== 1
-      || organization[0] !== 'Organization policy: Loaded from api.anthropic.com'
-      || lines.some(s => /settings.*(?:error|invalid|failed)|(?:error|invalid|failed).*settings/i.test(s))
-      || policyDebug.some(s => /fetched|failed|failure|deferred|superseded|reset|refreshed|lossy|invalid|unrestricted|timed out|stale|no settings found|applied|rejected|unexpected|unauthorized|error|newer/i.test(s))) throw error('NATIVE_POLICY');
+      || organization[0] !== 'Organization policy: Loaded from api.anthropic.com') throw error('NATIVE_POLICY', 'POLICY_STATUS');
+  if (lines.some(s => /settings.*(?:error|invalid|failed)|(?:error|invalid|failed).*settings/i.test(s))
+      || policyDebug.some(s => /fetched|failed|failure|deferred|superseded|reset|refreshed|lossy|invalid|unrestricted|timed out|stale|no settings found|applied|rejected|unexpected|unauthorized|error|newer/i.test(s))) throw error('NATIVE_POLICY', 'POLICY_FAILED');
   const pending = remote[0] === 'Managed settings (remote): checking… (fetch in progress; re-run in a moment)';
-  if (!pending && remote[0] !== 'Managed settings (remote): loaded') throw error('NATIVE_POLICY');
+  if (!pending && remote[0] !== 'Managed settings (remote): loaded') throw error('NATIVE_POLICY', 'POLICY_STATUS');
   for (const marker of ['Remote settings: Using cached settings (304)', 'Remote settings: Cache still valid (304 Not Modified)',
     'Policy limits: Using cached restrictions (304)', 'Policy limits: Cache still valid (304 Not Modified)']) {
-    if (policyDebug.filter(s => s === marker).length !== 1) throw error('NATIVE_POLICY');
+    if (policyDebug.filter(s => s === marker).length !== 1) throw error('NATIVE_POLICY', 'POLICY_UNATTESTED');
   }
-  return pending ? 'pending' : 'confirmed';
+  // The completed cache-adoption/freshness evidence supersedes only the exact
+  // known early pending status, never a failed or unknown status.
+  return 'confirmed';
 }
 
 function validateIdentity(identity) {
@@ -517,6 +529,7 @@ function createRuntime(options, deps) {
   if (parent.HOME && parent.USERPROFILE && path.resolve(parent.HOME) !== path.resolve(parent.USERPROFILE)) throw error('NATIVE_ROOT');
 
   return Object.freeze({
+    acquire: signal => acquireProfileLock(configRoot, signal),
     async preflight(input) {
       if (!object(input) || Object.keys(input).some(k => !['cwd', 'model', 'expectedIdentity'].includes(k))
           || typeof input.cwd !== 'string' || !path.isAbsolute(input.cwd)) throw error('NATIVE_INPUT');
@@ -575,13 +588,11 @@ function createRuntime(options, deps) {
         if (context.teamPolicy) {
           // Validate and baseline existing cache bytes before each metadata child;
           // no missing-cache warmup or mutation retry is silently authorized.
-          for (let attempt = 0; attempt < 3; attempt++) {
-            const before = await inspectSources(context, deps, { includeGlobal: false });
-            const result = await execute(['--debug-to-stderr', 'doctor']);
-            if (await inspectSources(context, deps, { includeGlobal: false }) !== before) throw error('NATIVE_DRIFT');
-            if (teamPolicyStatus(result) === 'confirmed') return;
-          }
-          throw error('NATIVE_POLICY');
+          const before = await inspectSources(context, deps, { includeGlobal: false });
+          const result = await execute(['--debug-to-stderr', 'doctor']);
+          if (await inspectSources(context, deps, { includeGlobal: false }) !== before) throw error('NATIVE_DRIFT');
+          teamPolicyStatus(result);
+          return;
         }
         const doctor = await execute(['doctor']);
         const lines = (doctor.stdout + '\n' + doctor.stderr).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').split(/\r?\n/).map(s => s.trim());
@@ -595,14 +606,21 @@ function createRuntime(options, deps) {
       // establish a full stat baseline, then require a second, stable metadata pass.
       let launchLedger = createSourceLedger(deps);
       let launchSources = await inspectSources(context, deps, { ledger: launchLedger });
-      if (await auth() !== fingerprint || await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
+      if (await auth() !== fingerprint) throw error('NATIVE_DRIFT', 'ACCOUNT_CHANGED');
+      launchLedger.revalidate();
+      if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
       const identity = freeze({ contract: context.teamPolicy ? TEAM_RUNTIME_CONTRACT : RUNTIME_CONTRACT, version, executable: context.command,
         model, configRoot: context.configRoot, configRootMode: context.configRootMode, nativeConfigRoot: context.nativeConfigRoot,
         home: context.home, cwd: context.cwd, executableFingerprint: context.executableFingerprint, accountFingerprint: fingerprint });
-      if (expected && Object.keys(identity).some(k => identity[k] !== expected[k])) throw error('NATIVE_DRIFT');
+      if (expected) {
+        // Check profile/runtime fields first: the account hash also includes profile paths.
+        if (Object.keys(identity).some(k => k !== 'accountFingerprint' && identity[k] !== expected[k])) throw error('NATIVE_DRIFT', 'SAVED_RUNTIME_CHANGED');
+        if (identity.accountFingerprint !== expected.accountFingerprint) throw error('NATIVE_DRIFT', 'SAVED_ACCOUNT_CHANGED');
+      }
       async function recheck() {
+        launchLedger.revalidate();
         if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
-        if (await auth() !== fingerprint) throw error('NATIVE_DRIFT');
+        if (await auth() !== fingerprint) throw error('NATIVE_DRIFT', 'ACCOUNT_CHANGED');
         if (context.teamPolicy) {
           if (await inspectSources(context, deps) !== launchSources) throw error('NATIVE_DRIFT');
           await policy();
@@ -614,7 +632,9 @@ function createRuntime(options, deps) {
           if (await inspectSources(context, deps, { includeGlobal: false }) !== initialSources) throw error('NATIVE_DRIFT');
           const refreshedLedger = createSourceLedger(deps);
           const refreshedSources = await inspectSources(context, deps, { ledger: refreshedLedger });
-          if (await auth() !== fingerprint || await inspectSources(context, deps) !== refreshedSources) throw error('NATIVE_DRIFT');
+          if (await auth() !== fingerprint) throw error('NATIVE_DRIFT', 'ACCOUNT_CHANGED');
+          refreshedLedger.revalidate();
+          if (await inspectSources(context, deps) !== refreshedSources) throw error('NATIVE_DRIFT');
           if (await inspectSources(context, deps, { includeGlobal: false }) !== initialSources) throw error('NATIVE_DRIFT');
           refreshedLedger.revalidate();
           launchLedger = refreshedLedger;

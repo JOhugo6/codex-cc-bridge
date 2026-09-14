@@ -9,9 +9,9 @@ const { spawnSync } = require('node:child_process');
 // Helpers are loaded below from an isolated repo-shaped source snapshot.
 const repo = path.resolve(__dirname, '..', '..');
 const fixtureRoot = path.join(__dirname, 'installer-fixtures');
-// Capture the runtime and its local version dependency once, so every isolated
+// Capture the runtime and its local dependencies once, so every isolated
 // fixture uses the same source bytes without pinning tests to an old revision.
-const nativeSnapshots = Object.fromEntries(['native-runtime.js', 'native-version.js']
+const nativeSnapshots = Object.fromEntries(['native-runtime.js', 'native-version.js', 'profile-lock.js', 'config.js']
   .map(file => [file, fs.readFileSync(path.join(repo, 'bridge', 'lib', file))]));
 // Snapshot installer inputs once; backend/index/doctor use offline fixtures.
 const snapshots = Object.fromEntries(['install.ps1', 'bridge/install-config.js', 'skills/claude-peer/SKILL.md', 'bridge/configure-timeout.js'].map(file => [file, fs.readFileSync(path.join(repo, file))]));
@@ -25,10 +25,8 @@ let launcher;
 let buildRoot;
 let nodeSeed;
 const isolatedHelpers = fs.mkdtempSync(path.join(os.tmpdir(), 'installer-helper-source-'));
-const configStub = 'exports.fail = (code, message) => Object.assign(new Error(message), { code });\n';
 write(path.join(isolatedHelpers, 'install-config.js'), snapshots['bridge/install-config.js']);
 for (const [file, bytes] of Object.entries(nativeSnapshots)) write(path.join(isolatedHelpers, 'lib', file), bytes);
-write(path.join(isolatedHelpers, 'lib', 'config.js'), configStub);
 const { prepareOptions, codexParts, replaceCodex, expectedCodexWrite } = require(path.join(isolatedHelpers, 'install-config.js'));
 test.after(() => removeFixture(isolatedHelpers));
 
@@ -94,7 +92,6 @@ function pc(t, label = 'PC-A', { codex = true, parentRoot = false, binName = 'Pr
   for (const name of ['npm', ...(codex ? ['codex'] : [])]) write(path.join(bin, `${name}.cmd`), `@"%~dp0node.exe" "%~dp0external-cli.js" ${name} %*\r\n`);
   for (const [relative, bytes] of Object.entries(snapshots)) write(path.join(source, relative), bytes);
   for (const [file, bytes] of Object.entries(nativeSnapshots)) write(path.join(source, 'bridge', 'lib', file), bytes);
-  write(path.join(source, 'bridge', 'lib', 'config.js'), configStub);
   write(path.join(source, 'bridge', 'package.json'), JSON.stringify({ name: 'codex-cc-bridge', version: 'fixture', private: true, dependencies: {} }));
   write(path.join(source, 'bridge', 'package-lock.json'), '{"lockfileVersion":3}');
   write(path.join(source, 'bridge', 'index.js'), '// Offline installer fixture; never a real MCP server.\n');

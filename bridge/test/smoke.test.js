@@ -155,3 +155,38 @@ test('opt-in offline failure preserves only smoke state and sanitizes raw native
   assert.equal(error.code, 'NATIVE_AUTH'); assert.equal(path.dirname(error.retained_smoke_directory), f.root);
   assert.equal(fs.existsSync(path.join(error.retained_smoke_directory, 'project')), true);
 });
+
+test('offline smoke failures retain only allowlisted bridge reasons through MCP and final JSON', async t => {
+  const f = profile(t);
+  for (const [code, reason, expected] of [
+    ['NATIVE_DRIFT', 'GLOBAL_METADATA_CHANGED', 'GLOBAL_METADATA_CHANGED'],
+    ['NATIVE_POLICY', 'POLICY_UNATTESTED', 'POLICY_UNATTESTED'],
+    ['NATIVE_DRIFT', 'RAW_SECRET', undefined],
+    ['NATIVE_AUTH', 'GLOBAL_METADATA_CHANGED', undefined],
+    ['RAW_SECRET', 'GLOBAL_METADATA_CHANGED', undefined],
+  ]) {
+    let calls = 0, closed = 0;
+    const main = smokeMain({
+      'node:os': { tmpdir: () => f.root },
+      '../doctor': { connect: async () => ({
+        callTool: async () => {
+          calls++;
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code, reason, message: 'RAW_SECRET', extra: 'RAW_SECRET' }) }] };
+        },
+        close: async () => { closed++; },
+      }) },
+    });
+    const out = await main(['--live'], f.env);
+    assert.equal(out.code, 1);
+    assert.equal(calls, 1, 'diagnostic propagation must never retry');
+    assert.equal(closed, 1);
+    assert.ok(!out.stderr.includes('RAW_SECRET'));
+    const error = JSON.parse(out.stderr.trim().split('\n').at(-1));
+    assert.equal(error.code, code === 'RAW_SECRET' ? 'SMOKE_CALL' : code);
+    assert.equal(error.reason, expected);
+    if (expected) assert.equal(error.message, require('../lib/config').safeError({ code, reason }).message);
+    else assert.equal(error.message, undefined);
+    assert.equal(error.task_submitted, 'unknown');
+    assert.equal(path.dirname(error.retained_smoke_directory), f.root);
+  }
+});
