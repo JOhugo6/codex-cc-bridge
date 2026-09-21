@@ -5,8 +5,8 @@ param(
     [string]$SkillRoot = $(Join-Path $env:USERPROFILE '.agents\skills'),
     [string]$ClaudeSkillRoot = '',
     [string]$NativeConfigRoot = '',
-    [ValidateSet('dontAsk', 'acceptEdits', 'plan', 'default', 'auto')]
-    [string]$PermissionMode = 'dontAsk',
+    [ValidateSet('dontAsk', 'acceptEdits', 'plan', 'default', 'auto', 'bypassPermissions')]
+    [string]$PermissionMode = 'bypassPermissions',
     [string[]]$AllowedTools = @(),
     [string]$Model = 'opus',
     [ValidateRange(10, 86400)][int]$TimeoutSeconds = 900,

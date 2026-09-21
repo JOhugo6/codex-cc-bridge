@@ -13,8 +13,8 @@ const MODEL = resolveModel('opus');
 const HELP = `Usage: npm run smoke -- --live
 Alternatively set CLAUDE_BRIDGE_LIVE=1. Without explicit opt-in this command refuses.
 Runs two tiny synthetic messages across an MCP restart plus exact cached replay.
-Uses native Claude Code >2.1.263 with --tools empty: no tool implementations, hooks disabled,
-strict empty child MCP. dontAsk and allowedTools=[] alone are NOT tool removal.
+Uses native Claude Code >2.1.263 with full native tools, configured MCP and hooks,
+and bypassPermissions. This is not an isolated or read-only smoke test.
 Consumes real subscription/API usage, may cost money, and leaves native transcripts
 in the selected native profile. Existing global native instructions may still apply.
 Only smoke-owned temporary cwd/state are cleaned; no profile/transcript deletion.
@@ -65,14 +65,14 @@ async function rehearse(open, cwd, marker) {
     if (two.turn !== 2 || two.replayed !== false || two.session_id !== one.session_id
         || !isDeepStrictEqual(two.runtime, one.runtime) || two.reply.trim() !== marker) throw failure('SMOKE_CONTINUITY');
     const status = await call('claude_status', { conversation_id: 'smoke' });
-    if (status.policy?.disableTools !== true) throw failure('SMOKE_TOOL_POLICY');
+    if (status.policy?.disableTools !== false || status.policy?.permissionMode !== 'bypassPermissions') throw failure('SMOKE_TOOL_POLICY');
     if (status.version !== 2 || status.status !== 'ready' || status.turn !== 2
         || status.session_id !== one.session_id || status.model !== MODEL
         || !isDeepStrictEqual(status.runtime, one.runtime) || !isDeepStrictEqual(status.last_result, two)) throw failure('SMOKE_STATUS');
     return { mode: 'offline-protocol-rehearsal', model: MODEL, model_evidence: two.model_evidence,
       session_id: two.session_id, contract: two.runtime.contract, version: two.runtime.version,
       account_fingerprint: two.runtime.accountFingerprint, executable_fingerprint: two.runtime.executableFingerprint,
-      turns: 2, mcp_connections: 2, exact_cached_replay: true, tools_disabled: true, live_entitlement_verified: false };
+      turns: 2, mcp_connections: 2, exact_cached_replay: true, tools_disabled: false, live_entitlement_verified: false };
   } finally { await client?.close(); }
 }
 
@@ -86,7 +86,7 @@ async function main(args = process.argv.slice(2), env = process.env) {
     return 1;
   }
   process.stderr.write(JSON.stringify({ warning: 'LIVE_USAGE_AND_NATIVE_TRANSCRIPTS',
-    note: 'Real usage/cost; native transcripts remain. Global native instructions may apply. Tools disabled; no login/refresh/retry.' }) + '\n');
+    note: 'Real usage/cost; native transcripts remain. Global native instructions may apply. Full native tools, MCP and hooks with bypassPermissions; no login/refresh/retry.' }) + '\n');
   let root;
   try {
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'claude-bridge-smoke-')));
@@ -97,8 +97,8 @@ async function main(args = process.argv.slice(2), env = process.env) {
     // Only these narrow server settings differ; never manufacture an auth profile
     // or strip native global context. The native adapter owns auth preflight.
     const childEnv = { ...env, CLAUDE_BRIDGE_STATE_DIR: path.join(root, 'state'),
-      CLAUDE_BRIDGE_DISABLE_TOOLS: '1', CLAUDE_BRIDGE_ALLOWED_TOOLS: '[]',
-      CLAUDE_BRIDGE_PERMISSION_MODE: 'dontAsk', CLAUDE_BRIDGE_MODEL: 'opus', CLAUDE_BRIDGE_TIMEOUT_MS: '120000' };
+      CLAUDE_BRIDGE_DISABLE_TOOLS: '0', CLAUDE_BRIDGE_ALLOWED_TOOLS: '[]',
+      CLAUDE_BRIDGE_PERMISSION_MODE: 'bypassPermissions', CLAUDE_BRIDGE_MODEL: 'opus', CLAUDE_BRIDGE_TIMEOUT_MS: '120000' };
     const result = await rehearse(() => connect(path.join(__dirname, '../index.js'), childEnv), cwd, randomUUID());
     // Both clients/native children are closed before deleting only our temporary
     // project/state. Transcripts belong to the native profile and remain there.

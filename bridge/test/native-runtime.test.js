@@ -90,8 +90,9 @@ test('ordinary native UI, per-model effort, agent teams and saved MCP preference
   await f.json(path.relative(f.root, file), settings);
   const prepared = await f.runtime({ parentEnv: { ...f.parentEnv, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' } }).preflight({ cwd: f.project });
   await prepared.launch(l => {
-    assert.ok(l.args.includes('--strict-mcp-config'));
-    assert.equal(l.args[l.args.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
+    assert.ok(!l.args.includes('--strict-mcp-config'));
+    assert.ok(!l.args.includes('--mcp-config'));
+    assert.equal(JSON.parse(l.args[l.args.indexOf('--settings') + 1]).disableAllHooks, undefined);
     assert.equal(l.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, '1');
     assert.ok(!JSON.stringify(l).includes(SENTINEL));
   });
@@ -124,7 +125,7 @@ test('parent sanitation is case insensitive, immutable, private, and never resto
     assert.equal(launch.env.ANTHROPIC_API_KEY, ''); assert.equal(launch.env.CLAUDE_CODE_OAUTH_TOKEN, '');
     assert.equal(launch.env.ANTHROPIC_BASE_URL, 'https://api.anthropic.com');
     assert.ok(!Object.hasOwn(launch.env, 'NODE_OPTIONS')); assert.ok(!Object.hasOwn(launch.env, 'OPENAI_API_KEY'));
-    assert.equal(launch.env.CLAUDE_BRIDGE_CHILD, '1'); assert.equal(launch.shell, false);
+    assert.equal(launch.env.CLAUDE_BRIDGE_CHILD, undefined); assert.equal(launch.shell, false);
     assert.ok(!JSON.stringify(launch.args).includes(SENTINEL));
     assert.ok(Object.isFrozen(launch) && Object.isFrozen(launch.env) && Object.isFrozen(launch.args));
     assert.throws(() => { launch.env.ANTHROPIC_BASE_URL = SENTINEL; }, TypeError);
@@ -593,4 +594,20 @@ test('launch checks again after the recheck promise yields and submits without a
   };
   await assert.rejects(p.launch(() => { callback = true; }), rejection('NATIVE_DRIFT'));
   assert.equal(changed, true); assert.equal(callback, false);
+}));
+
+
+test('nested task environment accepts only compatible bridge storage and false provider pins', async () => withFixture(async f => {
+  const prepared = await f.runtime().preflight({ cwd: f.project });
+  let parentEnv;
+  await prepared.launch(launch => { parentEnv = { ...launch.env }; });
+  delete parentEnv.CLAUDE_CONFIG_DIR;
+  const nested = await f.runtime({ parentEnv }).preflight({ cwd: f.project });
+  assert.deepEqual(nested.identity, prepared.identity);
+  for (const name of ['USE_LOCAL_OAUTH', 'USE_STAGING_OAUTH', 'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST', 'CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH']) {
+    await assert.rejects(async () => f.runtime({ parentEnv: { ...parentEnv, [name]: '1' } }).preflight({ cwd: f.project }), rejection('NATIVE_CONFLICT'));
+  }
+  for (const name of ['ANTHROPIC_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR']) {
+    assert.throws(() => f.runtime({ parentEnv: { ...parentEnv, [name]: path.join(f.root, 'other-profile') } }), rejection('NATIVE_ROOT'));
+  }
 }));

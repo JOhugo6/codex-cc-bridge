@@ -42,7 +42,7 @@ test('first-use migration control is metadata-only, private, and absent from the
 });
 
 for (const defaultRoot of [true, false]) for (const disableTools of [false, true]) {
-  test(`native first-use opus preference survives MCP restart/replay (${defaultRoot ? 'default' : 'explicit'}, tools ${disableTools ? 'off' : 'on'})`, { timeout: 120000 }, async () => {
+  test(`native first-use opus preference survives MCP restart/replay (${defaultRoot ? 'default' : 'explicit'}, legacy disable-tools ${disableTools})`, { timeout: 120000 }, async () => {
     const f = await synthetic({ native: true, defaultRoot });
     let connection;
     try {
@@ -76,12 +76,12 @@ for (const defaultRoot of [true, false]) for (const disableTools of [false, true
       assert.deepEqual(await stamp(settings), original);
       const wire = JSON.stringify(inference(f));
       assert.ok(wire.includes('FIRST_USE_PROJECT_CONTEXT')); assert.ok(wire.includes('FIRST_USE_USER_CONTEXT'));
-      // Native intentionally omits Skill discovery when all tools are disabled.
-      if (!disableTools) assert.ok(wire.includes('first-use'));
+      // Legacy bridge tool switches cannot suppress native discovery.
+      assert.ok(wire.includes('first-use'));
       const results = inference(f).flatMap(r => r.body.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(x => x.type === 'tool_result');
-      assert.ok(results.some(r => r.tool_use_id === 'first_use_allowed' && Boolean(r.is_error) === disableTools));
+      assert.ok(results.some(r => r.tool_use_id === 'first_use_allowed' && !r.is_error));
       assert.ok(results.some(r => r.tool_use_id === 'first_use_denied' && r.is_error));
-      assert.equal(wire.includes('FIRST_USE_ALLOWED_CONTENT'), !disableTools);
+      assert.ok(wire.includes('FIRST_USE_ALLOWED_CONTENT'));
       assert.ok(!wire.includes('FIRST_USE_DENIED_CONTENT'));
       await connection.close(); connection = null;
       connection = await connectNative(f, { CLAUDE_BRIDGE_DISABLE_TOOLS: disableTools ? '0' : '1',
@@ -95,11 +95,11 @@ for (const defaultRoot of [true, false]) for (const disableTools of [false, true
       assert.equal(two.structuredContent.model, 'claude-opus-5[1m]');
       const status = await connection.client.callTool({ name: 'claude_status', arguments: { conversation_id: 'first-use' } });
       assert.equal(status.structuredContent.status, 'ready');
-      assert.equal(status.structuredContent.policy.disableTools, disableTools);
-      assert.deepEqual(status.structuredContent.policy.allowedTools, ['Read']);
+      assert.equal(status.structuredContent.policy.disableTools, false);
+      assert.equal(status.structuredContent.policy.permissionMode, 'bypassPermissions');
+      assert.deepEqual(status.structuredContent.policy.allowedTools, []);
       for (const r of inference(f)) {
-        if (disableTools) assert.deepEqual(r.body.tools || [], []);
-        else assert.ok((r.body.tools || []).some(t => t.name === 'Read'));
+        assert.ok((r.body.tools || []).some(t => t.name === 'Read'));
         assert.ok(!(r.body.tools || []).some(t => t.name.startsWith('mcp__')));
       }
       assert.deepEqual(await stamp(settings), original);

@@ -154,13 +154,13 @@ function validateSettings(value, { managed = false } = {}) {
     if (key === 'theme' && typeof val !== 'string') throw error('NATIVE_SOURCE');
     if (['skipDangerousModePermissionPrompt', 'skipAutoPermissionPrompt', 'agentPushNotifEnabled'].includes(key)
         && typeof val !== 'boolean') throw error('NATIVE_SOURCE');
-    // Native --strict-mcp-config selects only our explicit empty MCP config.
-    // These saved definitions are preserved but never started by this runtime.
+    // Native task launches load saved MCP definitions normally.
+    // Only metadata diagnostics use an isolated empty MCP configuration.
     if (key === 'mcpServers' && !object(val)) throw error('NATIVE_SOURCE');
     // A personal preferred model is preserved, but --model is authoritative. Managed
     // model preferences/allowlists are deliberately NOT overridden by this adapter.
     if (key === 'model' && (typeof val !== 'string' || !val.trim() || val.includes('\0'))) throw error('NATIVE_SOURCE');
-    if (key === 'disableAllHooks' && (typeof val !== 'boolean' || managed && !val)) throw error('NATIVE_CONFLICT');
+    if (key === 'disableAllHooks' && typeof val !== 'boolean') throw error('NATIVE_CONFLICT');
     if (['allowManagedMcpServersOnly', 'allowManagedHooksOnly', 'allowManagedPermissionRulesOnly'].includes(key) && typeof val !== 'boolean') throw error('NATIVE_SOURCE');
     if (key === '$schema' && typeof val !== 'string') throw error('NATIVE_SOURCE');
     if (key === 'permissions') {
@@ -437,7 +437,7 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
 function preparedEnvironment(parent, context, deps, canonicalModel, metadataOnly = false) {
   const env = {};
   for (const [name, value] of Object.entries(parent)) {
-    if (HOST_NAMES.test(name) && value !== '') throw error('NATIVE_CONFLICT');
+    if (HOST_NAMES.test(name) && value !== '' && !(FALSE_PINS.includes(name) && value === '0')) throw error('NATIVE_CONFLICT');
     if (PIN_NAMES.has(name) || DROP_PARENT.test(name)) continue;
     if (/^(?:CLAUDE_|_CLAUDE_)/.test(name) && !SAFE_NATIVE_ENV.has(name) && !ROOT_NAMES.has(name)) throw error('NATIVE_CONFLICT');
     env[name] = value;
@@ -460,14 +460,14 @@ function preparedEnvironment(parent, context, deps, canonicalModel, metadataOnly
   // from the user's home into ~/.claude, changing native login/trust/config identity.
   if (context.configRootMode === 'explicit') pins.CLAUDE_CONFIG_DIR = context.nativeConfigRoot;
   for (const name of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SYSTEMROOT', 'WINDIR', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432']) if (parent[name]) pins[name] = parent[name];
-  Object.assign(env, pins, { CLAUDE_BRIDGE_CHILD: '1' });
+  Object.assign(env, pins);
   // Private injected proxy is only used by disposable native tests. There is no env/MCP switch.
   if (deps.transportEnv) Object.assign(env, deps.transportEnv);
   // 2.1.263 latches the global .claude.json path BEFORE applying --settings.env.
   // In default mode the process env MUST remain unset, but this later settings-only
   // pin keeps session/storage paths from moving on ordinary env edits. Native tests
   // prove both original home .claude.json selection and absence of a new config file.
-  const guard = { disableAllHooks: true, apiKeyHelper: '', fallbackModel: [], switchModelsOnFlag: false,
+  const guard = { ...(metadataOnly ? { disableAllHooks: true } : {}), apiKeyHelper: '', fallbackModel: [], switchModelsOnFlag: false,
     modelOverrides: { [canonicalModel.replace('[1m]', '')]: canonicalModel.replace('[1m]', '') },
     env: { ...pins, ...(context.configRootMode === 'default' ? { CLAUDE_CONFIG_DIR: context.configRoot } : {}), ...(deps.transportEnv || {}) } };
   return freeze({ env, guard });
@@ -534,10 +534,14 @@ function createRuntime(options, deps) {
   const executable = options.executable;
   const explicitRoot = options.configRoot;
   if (explicitRoot === undefined && Object.hasOwn(parent, 'CLAUDE_CONFIG_DIR')) throw error('NATIVE_ROOT');
-  if (['CLAUDE_SECURESTORAGE_CONFIG_DIR', 'ANTHROPIC_CONFIG_DIR', 'XDG_CONFIG_HOME'].some(k => parent[k] !== undefined)) throw error('NATIVE_ROOT');
+  if (parent.XDG_CONFIG_HOME !== undefined) throw error('NATIVE_ROOT');
   const home = parent.USERPROFILE || parent.HOME || deps.homedir();
   const appdata = parent.APPDATA || path.join(home, 'AppData/Roaming');
   const configRoot = explicitRoot === undefined ? path.join(home, '.claude') : explicitRoot;
+  // A nested native MCP process inherits our exact storage pins. Accept only
+  // those compatible values, never an alternative auth/profile root.
+  if (parent.ANTHROPIC_CONFIG_DIR !== undefined && parent.ANTHROPIC_CONFIG_DIR !== path.join(appdata, 'Anthropic')) throw error('NATIVE_ROOT');
+  if (parent.CLAUDE_SECURESTORAGE_CONFIG_DIR !== undefined && parent.CLAUDE_SECURESTORAGE_CONFIG_DIR !== (explicitRoot === undefined ? '' : explicitRoot)) throw error('NATIVE_ROOT');
   if (![home, appdata, configRoot].every(p => typeof p === 'string' && path.isAbsolute(p))) throw error('NATIVE_ROOT');
   if (parent.HOME && parent.USERPROFILE && path.resolve(parent.HOME) !== path.resolve(parent.USERPROFILE)) throw error('NATIVE_ROOT');
 
@@ -651,8 +655,7 @@ function createRuntime(options, deps) {
         launch: { value: async submit => {
           if (typeof submit !== 'function') throw error('NATIVE_INPUT');
           await recheck();
-          const launchArgs = [...args];
-          launchArgs[launchArgs.indexOf('--settings') + 1] = JSON.stringify(taskPrepared.guard);
+          const launchArgs = ['--model', model, '--settings', JSON.stringify(taskPrepared.guard)];
           const descriptor = freeze({ command: context.command, args: launchArgs, cwd: context.cwd,
             env: { ...taskPrepared.env }, shell: false, windowsHide: true });
           // Recheck observations made before all async source/registry/auth work,

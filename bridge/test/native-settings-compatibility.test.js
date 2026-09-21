@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { synthetic, assertWire } = require('./native-runtime-fixture');
 
-test('native ordinary preferences and personal feature caches preserve guards and disable saved MCP', { timeout: 120000 }, async t => {
+test('native ordinary preferences and personal feature caches preserve guards and saved settings', { timeout: 120000 }, async t => {
   const f = await synthetic({ native: true });
   t.after(() => f.close());
   const marker = path.join(f.project, 'mcp-started');

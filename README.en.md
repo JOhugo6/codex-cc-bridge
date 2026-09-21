@@ -11,8 +11,9 @@ turn its native agents into Anthropic agents.
 
 The path is parent → skill/MCP tool → local Node server → supervised native
 `claude.exe` → saved first-party login. The child receives task text on
-UTF-8 stdin, uses `--session-id` first and `--resume` afterward, and has no inherited
-MCP servers or hooks. Normal project instructions, settings and permissions remain.
+UTF-8 stdin and uses `--session-id` first and `--resume` afterward. Tasks use full
+native tools, configured MCP servers and hooks with `bypassPermissions`.
+Parent-only Codex MCP settings are not automatically imported.
 
 **Release limitation:** historical intermittent `NATIVE_DRIFT` prelaunch refusals
 remain unexplained (reliability item 47). Later passing runs did not establish a
@@ -96,25 +97,20 @@ Public default **`opus` → `claude-opus-5[1m]`** (structured/wire base ID
 provider/model fallback, or silent replacement session.
 
 Version 2 state pins canonical model, runtime/account/executable identity, exact
-profile selection, working directory and bridge permission/tool policy. Existing
-conversations do not adopt a newly installed default. **Version 1 is status and
+profile selection and working directory. Existing conversations retain their model. **Version 1 is status and
 exact completed replay only** (`LEGACY_SESSION` for a new turn); no migration.
 
-The server option `CLAUDE_BRIDGE_DISABLE_TOOLS=1` removes tool implementations via
-a literal empty native `--tools` argument. Only `0` and `1` are accepted; unset/`0`
-keeps normal tools. This is not a new MCP input or an arbitrary CLI-argument escape.
-New v2 conversations pin the boolean `policy.disableTools` across restarts and
-config changes in either direction. Old v2 state without the field stays normal,
-without migration; enabling the option cannot retrofit an existing conversation.
-Use a new conversation ID for an intentionally different policy.
+Tasks use `bypassPermissions`, full native tools, configured MCP servers and hooks.
+Legacy bridge permission/tool settings are validated but no longer restrict tasks.
+New v2 turns normalize stored access policy to `bypassPermissions`,
+`allowedTools=[]`, `disableTools=false`; completed replay stays historical.
+The pending write records the new policy; pre-submission failure restores the
+original ready snapshot. Native managed/OS constraints and explicit deny rules
+still apply. Inspect `permission_denials`.
 
-`dontAsk` denies operations needing approval rather than waiting. Existing allow
-rules still apply: **`allowedTools=[]` does not disable tools**, and neither
-`dontAsk` nor a “do not edit” prompt guarantees read-only work. Inspect
-`permission_denials`; never escalate permissions or use another tool to evade a
-denial. `-AllowedTools` takes permission rules, not CLI flags. Managed routing
-conflicts are refused, not overridden. Child routing isolation is **not an OS
-sandbox**, nor an atomic global policy lock after submission.
+Only metadata diagnostics disable MCP and hooks. Native task launches do not pass
+`--tools`, `--allowedTools`, or an empty MCP configuration. Recursive delegation has no extra bridge denial; existing session/profile concurrency locks remain. Provider/model/account
+identity checks remain in place. This is not an operating-system sandbox.
 
 ```json
 {
@@ -183,7 +179,7 @@ No hosted workflow run is implied by local tests or workflow authoring.
 `npm.cmd --prefix bridge run smoke -- --live` (or `CLAUDE_BRIDGE_LIVE=1`) is a usable,
 **explicitly opt-in** live check, not part of any offline test or CI job. Without
 opt-in it returns `SMOKE_OPT_IN_REQUIRED` before creating files or starting MCP.
-With consent it forces tool removal, default Opus, `dontAsk`, empty allow rules,
+With consent it uses Opus, `bypassPermissions`, full tools, native MCP and hooks,
 and a tiny temporary cwd outside the repository. It sends two synthetic messages
 across an MCP process restart and checks exact cached replay, stable v2 session/
 runtime identity and nonempty structured model evidence, not self-description.

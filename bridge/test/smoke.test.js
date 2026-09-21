@@ -55,7 +55,7 @@ test('smoke import is inert; no opt-in or invalid arguments never start any task
     assert.ok(!r.stderr.includes('SYNTHETIC_SECRET'));
   }
   const help = spawnSync(process.execPath, [entry, '--help'], { env: f.env, encoding: 'utf8', timeout: 10000 });
-  assert.equal(help.status, 0); assert.match(help.stdout, /allowedTools=\[\] alone are NOT tool removal/); assert.match(help.stdout, /transcripts/);
+  assert.equal(help.status, 0); assert.match(help.stdout, /full native tools, configured MCP and hooks/); assert.match(help.stdout, /transcripts/);
   assert.deepEqual(fs.readdirSync(f.root), before);
   assert.deepEqual(Object.keys(require('./live-smoke')), ['main']);
 });
@@ -86,7 +86,7 @@ test('offline harness rejects missing evidence, changed identities/replay/status
     ['SMOKE_CONTINUITY', (out, n) => { if (n === 3) out.runtime.accountFingerprint = 'c'.repeat(64); }],
     ['SMOKE_CONTINUITY', (out, n) => { if (n === 3) out.reply = 'lost context'; }],
     ['SMOKE_STATUS', (out, n) => { if (n === 4) out.status = 'uncertain'; }],
-    ['SMOKE_TOOL_POLICY', (out, n) => { if (n === 4) out.policy.disableTools = false; }],
+    ['SMOKE_TOOL_POLICY', (out, n) => { if (n === 4) out.policy.disableTools = true; }],
     ['SMOKE_CALL', () => {}],
   ];
   for (const [code, mutate] of scenarios) {
@@ -120,9 +120,9 @@ test('opt-in main uses private offline MCP, forces narrow policy, cleans only ow
       '../doctor': { connect: async (entry, env) => {
         connections++;
         assert.equal(path.basename(entry), 'index.js');
-        assert.equal(env.CLAUDE_BRIDGE_DISABLE_TOOLS, '1');
+        assert.equal(env.CLAUDE_BRIDGE_DISABLE_TOOLS, '0');
         assert.equal(env.CLAUDE_BRIDGE_ALLOWED_TOOLS, '[]');
-        assert.equal(env.CLAUDE_BRIDGE_PERMISSION_MODE, 'dontAsk');
+        assert.equal(env.CLAUDE_BRIDGE_PERMISSION_MODE, 'bypassPermissions');
         assert.equal(env.CLAUDE_BRIDGE_MODEL, 'opus');
         assert.equal(env.CLAUDE_BRIDGE_CONFIG_DIR, path.join(f.root, 'synthetic-existing-profile'));
         return connect(path.join(__dirname, 'smoke-fixture.js'), { ...f.env, SMOKE_FIXTURE_ROOT: f.root });
@@ -133,7 +133,7 @@ test('opt-in main uses private offline MCP, forces narrow policy, cleans only ow
     const snapshot = { ...env };
     const out = await main(args, env);
     assert.equal(out.code, 0); assert.equal(connections, 2); assert.deepEqual(env, snapshot);
-    assert.equal(JSON.parse(out.stdout).tools_disabled, true);
+    assert.equal(JSON.parse(out.stdout).tools_disabled, false);
     assert.match(out.stderr, /LIVE_USAGE_AND_NATIVE_TRANSCRIPTS/);
     assert.ok(!fs.readdirSync(f.root).some(name => name.startsWith('claude-bridge-smoke-')));
     assert.equal(fs.readFileSync(path.join(f.root, 'unrelated'), 'utf8'), 'preserve');

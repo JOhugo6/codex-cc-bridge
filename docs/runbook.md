@@ -55,7 +55,7 @@ Instalátor používá `npm ci --no-audit --no-fund`; nejde o offline ani dry-ru
 - `-NativeConfigRoot`: volitelný **existující absolutní NFC root dítěte**.
   Zachová přesný přijatý řetězec; nativní auth namespace může rozlišit i jiný zápis
   stejného adresáře. Nezaměňuj jej s rodičovským rootem.
-- `-Model opus`, `-PermissionMode dontAsk`, `-AllowedTools @()`,
+- `-Model opus`, `-PermissionMode bypassPermissions`, `-AllowedTools @()`,
   `-TimeoutSeconds 900` jsou defaulty. `AllowedTools` nesmí být CLI přepínače.
 
 Sdílená rodičovská user registrace `claude_bridge` vzniká nativním
@@ -94,9 +94,9 @@ místní instalaci a samostatné legitimní přihlášení na každém PC.
 | `CLAUDE_BRIDGE_CONFIG_DIR` | Pouze explicitní existující profil dítěte. Bez ní standardní `~/.claude`, počáteční child `CLAUDE_CONFIG_DIR` je vynechané. |
 | `CLAUDE_BRIDGE_MODEL` | `opus` → `claude-opus-5[1m]`; nezávislé na aliasu/modelu rodiče. |
 | `CLAUDE_BRIDGE_TIMEOUT_MS` | 900000; validace 1000–86400000 ms. Instalátor dovoluje 10–86400 s. |
-| `CLAUDE_BRIDGE_PERMISSION_MODE` | `dontAsk`; dále `acceptEdits`, `plan`, `default`, `auto`. |
-| `CLAUDE_BRIDGE_ALLOWED_TOOLS` | JSON pole permission pravidel, default `[]`. Není vypnutí nástrojů. |
-| `CLAUDE_BRIDGE_DISABLE_TOOLS` | Striktně řetězec `0` nebo `1`; bez nastavení / `0` = normální nástroje, `1` = doslova prázdný native argument `--tools`, odstranění implementací nástrojů. Nová v2 tuto boolean policy připne. |
+| `CLAUDE_BRIDGE_PERMISSION_MODE` | Legacy hodnoty se validují; úlohy vždy používají `bypassPermissions`. |
+| `CLAUDE_BRIDGE_ALLOWED_TOOLS` | Legacy JSON pravidla se validují, ale nepředávají do task launch. |
+| `CLAUDE_BRIDGE_DISABLE_TOOLS` | Legacy `0`/`1` se validuje; nástroje vždy zůstávají dostupné. |
 
 Katalog přijímá jen `opus`, `opus[1m]`, `claude-opus-5`, `claude-opus-5[1m]`.
 U nové konverzace platí explicitní `claude_turn.model` → bridge env → Opus.
@@ -115,13 +115,12 @@ root konflikty a nepodporovaná nepřímá cesta jsou nepodporované. Bridge ne�
 soubor obsahuje i běžně měněné provozní údaje. Jeho obsah může být citlivý;
 bridge jej nevypisuje, nekopíruje do profilu ani neukládá do stavu konverzace.
 
-Normální user/project/local settings, CLAUDE.md, skills a permission context se
-zachovají. Hooks jsou vypnuté, child MCP je strict a prázdné, rekurzivní bridge
-se odmítá. Nedostupný delegovací nástroj nepřemosťuj jinou cestou. `dontAsk` a
-prázdné allow pole **nejsou** read-only ani tool-free policy; zděděné allow/deny
-pravidlo může změnit výsledek. Kontroluj `permission_denials`, nevynucuj úspěch
-eskalací oprávnění. Nejde o OS sandbox ani globální atomickou policy garanci po
-odeslání úlohy. Native transcripty zůstávají lokálně.
+User/project/local settings, CLAUDE.md a skills zůstávají dostupné. Úlohy běží
+s `bypassPermissions`, plnými nástroji a nativně nakonfigurovanými MCP/hooks.
+Codex-only MCP konfigurace se nepřenáší automaticky. Bridge nezakazuje rekurzivní delegování; existující zámky
+souběžných session/profilu zůstávají. Native managed/OS
+omezení a explicitní deny pravidla stále platí; kontroluj `permission_denials`.
+Pouze metadata diagnostika používá prázdné MCP a vypnuté hooks.
 
 ## Team přihlášení a organizační politiky
 
@@ -198,8 +197,8 @@ cesty, údaje účtu, text nativní diagnostiky nebo obsah politik.
 
 Běžné osobní preference (`modelSettings` pouze s `effortLevel`, nastavení rozhraní,
 agent teams a uložené MCP definice) samy o sobě nejsou konflikt routingu.
-Explicitní model bridge má přednost před osobním defaultem a dítě používá prázdný
-`--strict-mcp-config`. Osobní cache `remote-settings.json` / `policy-limits.json`
+Explicitní model bridge má přednost před osobním defaultem. Task launch používá
+nativní MCP konfiguraci. Osobní cache `remote-settings.json` / `policy-limits.json`
 se kontrolují podle úzkého schématu a zůstávají součástí kontroly změn před spuštěním;
 jejich pouhá přítomnost už nezpůsobuje `NATIVE_CONFLICT`. Neznámé policy/routing
 položky se dál odmítají. Nepodporovaný účet Enterprise nadále vrací `NATIVE_AUTH`.
@@ -219,14 +218,11 @@ dostatečně dlouhý; Codex instalátor nastavuje startup 30 s a tool timeout
    stejným ID je `REQUEST_ID_CONFLICT`.
 3. **v1**: pouze status a přesný completed replay. Nový tah je `LEGACY_SESSION`;
    žádná automatická migrace či nahrazení session.
-4. **v2**: kanonický model, runtime/account/executable identita, přesný profil,
-   cwd a bridge policy jsou připnuté. Změna defaultu je nepřepíše. Statusové
-   `inference_allowed` popisuje stav, **není nový preflight ani příslib entitlementu**.
-   Nová v2 ukládá `policy.disableTools: true|false`. Změna env ji přes restart
-   nepřepne ani jedním směrem. Stará v2 bez tohoto pole zachová historický normální
-   režim bez migrace/doplnění pole; v1 se novou policy nereinterpretuje. Vypnutí
-   nástrojů tak vyžaduje novou konverzaci založenou s `CLAUDE_BRIDGE_DISABLE_TOOLS=1`.
-   Veřejné MCP vstupy se nemění; libovolné args/provider/auth test volby neexistují.
+4. **v2**: model, účet, runtime, profil a cwd zůstávají připnuté. Nový tah
+   normalizuje i starou access policy na `bypassPermissions`, `allowedTools=[]`,
+   `disableTools=false`. Replay a status zůstávají historické do nového tahu.
+   Nová policy se uloží s pending stavem; před-submission chyba obnoví původní ready.
+   `inference_allowed` není příslib entitlementu ani nový preflight.
 5. Nový tah nejprve provede preflight, pak durable `pending`, pak finální recheck
    bezprostředně před supervised spawnem. Odmítnutí před submission callbackem
    obnoví původní ready snapshot; pokud se obnova neuloží, pending bezpečně zůstane.
@@ -423,21 +419,16 @@ npm.cmd --prefix bridge run smoke -- --live
 Bez opt-in script vrací `SMOKE_OPT_IN_REQUIRED`, exit 1, bez MCP/úlohy i nových
 souborů. `--help` je inertní. Jiné argumenty odmítne (`SMOKE_ARGUMENTS`); žádný
 model/provider/transport parametr. Se souhlasem nastaví pouze child bridge policy:
-`CLAUDE_BRIDGE_DISABLE_TOOLS=1`, `dontAsk`, `allowedTools=[]`, Opus a timeout 120 s.
-Nejde o prázdná oprávnění vydávaná za zákaz nástrojů: skutečný **native 2.1.263
-`--tools` s prázdným argumentem** odstraní implementace. Offline actual-native
-controls ověřují nulovou nabídku i odmítnutí serverem vnucených Read/Write/Skill,
-i když shared settings povolují nástroje a mají skills/hooks/MCP. Normální-mode
-pozitivní control nabízí nástroje a skutečně přečte syntetický povolený soubor.
-Hooks zůstávají vypnuté a child MCP strict/prázdné; permissions/managed guardy
-nejsou oslabeny. Není to OS sandbox ani garance nulových nativních filesystem I/O.
+`bypassPermissions`, plné nástroje, nativní MCP/hooks, Opus a timeout 120 s.
+Smoke tedy může spouštět nástroje/hooks ze zvoleného profilu a není izolovaný.
+Offline testy používají vlastní syntetické profily a lokální responder.
 
 Smoke vytvoří vlastní malý temp cwd mimo repo a oddělený bridge state. Nezakládá
 nový native auth profil: používá zvolený existující profil a normální preflight.
 První zpráva žádá `ACK` a uložení náhodného syntetického markeru; po uzavření a
 restartu MCP ověří přesný cached replay a druhou zprávou vyvolá marker. Kontroluje
 v2 session/runtime/model identitu, neprázdné strukturované `model_evidence`, nula
-permission denials, tahy 1/2 a uložené `policy.disableTools=true`. Sebepopis není
+permission denials, tahy 1/2 a uložené `policy.disableTools=false` a `permissionMode=bypassPermissions`. Sebepopis není
 důkaz. Chybějící/změněná evidence selže, nikoli automatický fallback nebo retry.
 
 **Spotřeba reálného tarifu/usage, možné náklady a zachované native transcripty.**

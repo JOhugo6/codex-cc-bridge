@@ -39,7 +39,7 @@ async function serve() {
   server.registerTool('claude_status', { inputSchema: z.object({ conversation_id: z.string() }) }, async () => {
     const state = load();
     return response({ version: 2, status: 'ready', turn: state.turn, model: state.runtime.model,
-      policy: { disableTools: true }, runtime: state.runtime, session_id: state.last_result.session_id, last_result: state.last_result });
+      policy: { disableTools: false, permissionMode: 'bypassPermissions' }, runtime: state.runtime, session_id: state.last_result.session_id, last_result: state.last_result });
   });
   await server.connect(new StdioServerTransport());
 }

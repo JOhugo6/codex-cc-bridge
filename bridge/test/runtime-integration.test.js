@@ -29,12 +29,12 @@ function invalidToolPolicies() {
   ];
 }
 
-test('allowed-tool configuration rejects argv options and malformed values but preserves rule flags', () => {
+test('allowed-tool configuration rejects argv options and malformed values and normalizes accepted rules to unrestricted access', () => {
   for (const allowedTools of invalidToolPolicies()) {
     assert.throws(() => config({ CLAUDE_BRIDGE_ALLOWED_TOOLS: JSON.stringify(allowedTools) }), reject('INVALID_CONFIG'));
   }
   const good = ['Read', 'Read(./--model)', 'Bash(git --version)', 'Bash(node --test *)', 'Bash(git log --oneline:*)', 'mcp__local__tool'];
-  assert.deepEqual(config({ CLAUDE_BRIDGE_ALLOWED_TOOLS: JSON.stringify(good) }).allowedTools, good);
+  assert.deepEqual(config({ CLAUDE_BRIDGE_ALLOWED_TOOLS: JSON.stringify(good) }).allowedTools, []);
 });
 
 test('direct backend rejects option-like and unusual allowed-tool arrays before supervised spawn', async t => {
@@ -70,7 +70,8 @@ test('backend snapshots indexed primitive rules without executing an overridden 
   assert.ok(observed, 'validation must not introduce an asynchronous spawn gap');
   const args = process.platform === 'win32'
     ? JSON.parse(Buffer.from(observed.args.at(-1), 'base64')).args : observed.args;
-  assert.deepEqual(args.slice(args.indexOf('--allowedTools') + 1), ['Read', 'Bash(git --version)']);
+  assert.ok(!args.includes('--allowedTools'));
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'bypassPermissions');
   assert.equal((await result).reply, 'ok');
 });
 
@@ -193,7 +194,7 @@ for (const [name, allowedTools] of [
     assert.equal(two.structuredContent.turn, 2); assert.equal(two.structuredContent.model, MODEL); assertWire(f, 3);
     assert.ok(JSON.stringify(inference(f).at(-1).body.messages).includes(input.message));
     const status = await connection.client.callTool({ name: 'claude_status', arguments: { conversation_id: 'integration' } });
-    assert.deepEqual(status.structuredContent.policy.allowedTools, good);
+    assert.deepEqual(status.structuredContent.policy.allowedTools, []);
     const stateFile = status.structuredContent.state_file;
     const corrupt = JSON.parse(await fs.readFile(stateFile, 'utf8'));
     corrupt.policy.allowedTools = allowedTools;
@@ -381,7 +382,7 @@ test('v2 schema rejects corrupt identity/cache/pending fields without native or 
     s => { s.runtime.contract += '/unknown'; }, s => { s.runtime.accountFingerprint = SECRET; },
     s => { s.runtime.executableFingerprint = 'bad'; }, s => { s.runtime.env = { TOKEN: SECRET }; },
     s => { s.runtime.nativeConfigRoot = f.dir; }, s => { s.session_id = SECRET; },
-    s => { s.policy.allowedTools = [null]; }, s => { s.policy.permissionMode = 'bypassPermissions'; },
+    s => { s.policy.allowedTools = [null]; }, s => { s.policy.permissionMode = 'invalid-mode'; },
     s => { s.created_at = 'yesterday'; }, s => { s.turn = 1.5; },
     s => { s.requests.push(structuredClone(s.requests[0])); }, s => { s.requests[0].hash = SECRET; },
     s => { s.requests[0].output.session_id = 'different'; }, s => { s.requests[0].output.turn = 2; },

@@ -8,7 +8,6 @@ const { ClaudeBackend } = require('./lib/claude-backend');
 const { ClaudeBridge } = require('./lib/bridge');
 
 async function main(createBackend = settings => new ClaudeBackend(settings), createRuntime) {
-  if (process.env.CLAUDE_BRIDGE_CHILD) throw new Error('Recursive Claude bridge invocation is disabled.');
   const settings = config();
   const backend = createBackend(settings);
   const bridge = new ClaudeBridge(backend, settings, createRuntime);

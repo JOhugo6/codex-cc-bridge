@@ -91,6 +91,6 @@ test('changed server permissions are not silently applied to existing sessions',
   const backend = { run: async i => { calls.push(i); return { reply: 'ok', session_id: i.sessionId }; } };
   await new ClaudeBridge(backend, settings).turn({ conversation_id: 'policy', message: 'x', working_dir: cwd });
   await new ClaudeBridge(backend, { ...settings, permissionMode: 'acceptEdits', allowedTools: ['Bash'] }).turn({ conversation_id: 'policy', message: 'x' });
-  assert.equal(calls[1].permissionMode, 'dontAsk');
+  assert.equal(calls[1].permissionMode, 'bypassPermissions');
   assert.deepEqual(calls[1].allowedTools, []);
 });

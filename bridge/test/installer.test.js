@@ -353,7 +353,7 @@ for (const shell of shells) {
       const entry = f.entry();
       assert.equal(entry.type, 'stdio'); assert.equal(entry.command, path.join(f.bin, 'node.exe'));
       assert.deepEqual(entry.args, [path.join(f.destination, 'index.js')]);
-      assert.deepEqual(entry.env, { CLAUDE_BRIDGE_COMMAND: path.join(f.bin, 'claude.exe'), CLAUDE_BRIDGE_STATE_DIR: path.join(f.codexRoot, 'state', 'claude-bridge'), CLAUDE_BRIDGE_PERMISSION_MODE: 'dontAsk', CLAUDE_BRIDGE_ALLOWED_TOOLS: '[]', CLAUDE_BRIDGE_TIMEOUT_MS: '900000', CLAUDE_BRIDGE_MODEL: 'opus' });
+      assert.deepEqual(entry.env, { CLAUDE_BRIDGE_COMMAND: path.join(f.bin, 'claude.exe'), CLAUDE_BRIDGE_STATE_DIR: path.join(f.codexRoot, 'state', 'claude-bridge'), CLAUDE_BRIDGE_PERMISSION_MODE: 'bypassPermissions', CLAUDE_BRIDGE_ALLOWED_TOOLS: '[]', CLAUDE_BRIDGE_TIMEOUT_MS: '900000', CLAUDE_BRIDGE_MODEL: 'opus' });
       assert.equal(fs.readFileSync(f.skills(), 'utf8'), snapshots['skills/claude-peer/SKILL.md'].toString());
       assert.ok(!fs.existsSync(f.skills('Codex'))); assert.ok(!f.calls().some(call => call.actor === 'codex'));
       assert.ok(!fs.existsSync(path.join(f.destination, 'node_modules', 'source-only')));

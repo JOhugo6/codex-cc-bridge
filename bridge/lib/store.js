@@ -24,7 +24,7 @@ function validateState(st, id) {
       typeof st.working_dir !== 'string' || !path.isAbsolute(st.working_dir) ||
       !Number.isSafeInteger(st.turn) || st.turn < 0 || !['ready', 'pending', 'uncertain'].includes(st.status) ||
       !Array.isArray(st.requests) || !object(st.policy) ||
-      !['dontAsk', 'acceptEdits', 'plan', 'default', 'auto'].includes(st.policy.permissionMode) ||
+      !['dontAsk', 'acceptEdits', 'plan', 'default', 'auto', 'bypassPermissions'].includes(st.policy.permissionMode) ||
       !Array.isArray(st.policy.allowedTools) || st.policy.allowedTools.some(rule => typeof rule !== 'string' || !rule.trim() || rule.length > 500) ||
       !(st.model === null || typeof st.model === 'string')) throw new Error('Invalid state');
   if (st.status === 'ready') {

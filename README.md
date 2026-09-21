@@ -10,8 +10,9 @@ Agent Teams; změna provideru rodiče nezmění jeho nativní agenty na Anthropi
 
 Cesta je rodič → skill/MCP nástroj → lokální Node server → hlídaný `claude.exe`
 → uložené first-party přihlášení. Text jde přes UTF-8 stdin, první tah
-použije `--session-id`, další `--resume`. V dítěti jsou vypnuté hooks a zděděné
-MCP servery; běžné projektové instrukce, settings a permissions zůstávají.
+použije `--session-id`, další `--resume`. Úlohy běží s `bypassPermissions`,
+plnými nativními nástroji a MCP servery/hooks z nativního Claude profilu.
+MCP konfigurace pouze v Codexu se automaticky nepřenáší.
 
 **Omezení vydání:** historická občasná odmítnutí `NATIVE_DRIFT` před spuštěním
 nemají prokázanou příčinu (reliability 47). Pozdější zelené běhy problém neuzavřely.
@@ -93,26 +94,20 @@ Veřejné **`opus` → `claude-opus-5[1m]`**, strukturované/wire základní ID 
 `CLAUDE_BRIDGE_MODEL`. Žádné převzetí rodičovského aliasu, automatický fallback
 provideru/modelu nebo tichá náhradní session.
 
-Stav v2 připíná kanonický model, runtime/account/executable identitu, přesný výběr
-profilu, pracovní adresář a bridge permission/tool policy. Nový default nepřepíše
-existující konverzaci. **Stav v1 dovoluje jen status a přesný replay dokončeného
-requestu**; nový tah vrátí `LEGACY_SESSION`. Automatická migrace není.
+Stav v2 připíná model, účet, runtime, profil a pracovní adresář. Nový tah
+normalizuje i historickou bridge policy na `bypassPermissions`,
+`allowedTools=[]`, `disableTools=false`; completed replay zachovává původní data.
+Před odesláním se nová policy uloží s pending stavem, při selhání před odesláním
+se obnoví původní ready stav. V1 dovoluje pouze status a completed replay.
 
-Serverová volba `CLAUDE_BRIDGE_DISABLE_TOOLS=1` odstraní implementace nástrojů
-pomocí doslova prázdného argumentu nativního `--tools`. Přijímá pouze `0` a `1`;
-bez nastavení / s `0` zůstávají běžné nástroje. Není to nový MCP vstup ani možnost
-předat libovolné CLI přepínače. Nová v2 připne boolean `policy.disableTools` přes
-restarty i změny konfigurace oběma směry. Stará v2 bez pole ponechá historické
-běžné nástroje, bez migrace; zapnutí volby existující konverzaci nezmění.
-Pro vědomě jinou policy založ nové conversation ID.
-
-`dontAsk` odmítne operace vyžadující potvrzení, místo aby čekal. Existující allow
-pravidla dál platí: **`allowedTools=[]` nevypíná nástroje** a `dontAsk` ani text
-„neupravuj soubory“ nejsou záruka read-only práce. Kontroluj `permission_denials`;
-zamítnutí neobcházej zvýšením oprávnění nebo jiným nástrojem. `-AllowedTools`
-přijímá permission pravidla, ne CLI přepínače. Konfliktní managed routing se
-odmítá, nikoli přepisuje. Izolace routingu dítěte **není OS sandbox** ani atomický
-globální zámek policy po odeslání úlohy.
+Staré `CLAUDE_BRIDGE_PERMISSION_MODE`, `CLAUDE_BRIDGE_ALLOWED_TOOLS` a
+`CLAUDE_BRIDGE_DISABLE_TOOLS` se validují kvůli kompatibilitě, ale neomezují úlohy.
+Bridge nepředává `--tools`, `--allowedTools` ani prázdnou MCP konfiguraci a
+nevypíná hooks. Metadata diagnostika je oddělená: nespouští MCP ani hooks.
+Nativní managed/OS omezení a explicitní nativní deny pravidla zůstávají v platnosti.
+Kontroluj `permission_denials`. Bridge nezakazuje rekurzivní delegování;
+existující zámky souběžných session/profilu stále platí. Ověřování identity/modelu/first-party
+routingu zůstává zachované; nejde o OS sandbox.
 
 ```json
 {
@@ -181,8 +176,8 @@ Lokální testy nebo vytvoření workflow neznamenají spuštění hosted CI.
 `npm.cmd --prefix bridge run smoke -- --live` (nebo `CLAUDE_BRIDGE_LIVE=1`) je
 použitelný živý check se **zvláštním opt-in**, není součást offline testů ani CI.
 Bez opt-in vrátí `SMOKE_OPT_IN_REQUIRED` před vytvářením souborů a spuštěním MCP.
-Se souhlasem vynutí vypnutí nástrojů, výchozí Opus, `dontAsk`, prázdná allow pravidla
-a malý dočasný cwd mimo repo. Odešle dvě syntetické zprávy přes restart MCP procesu,
+Se souhlasem použije Opus, `bypassPermissions`, plné nástroje, MCP a hooks
+ze zvoleného profilu a malý dočasný cwd mimo repo. Odešle dvě syntetické zprávy přes restart MCP procesu,
 ověří přesný cached replay, stabilní v2 session/runtime identitu a neprázdná
 strukturovaná modelová metadata, nikoli sebepopis.
 
