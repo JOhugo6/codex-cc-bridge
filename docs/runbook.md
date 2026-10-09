@@ -195,6 +195,20 @@ cesty, údaje účtu, text nativní diagnostiky nebo obsah politik.
 | `GLOBAL_METADATA_CHANGED`, `CREDENTIAL_METADATA_CHANGED` | Změnil se chráněný obsah globální konfigurace nebo metadata souboru přihlašovacích údajů. Běžné povolené provozní zápisy globálního souboru tuto chybu nevyvolají. |
 | `EXECUTABLE_CHANGED`, `SETTINGS_CHANGED`, `SOURCES_CHANGED` | Změnil se executable, nastavení/cache nebo jiný sledovaný zdroj. Ověř změnu; obecný důvod neurčuje konkrétní soubor. |
 
+Claude Code 2.1.293 při `doctor` může přidat nebo odstranit
+`cachedGrowthBookFeatures.tengu_misty_aurora` s číselnou hodnotou `0`. Nativní
+čtenář používá při absenci stejný default `0` (vypnutý timeout vzdálených žádostí
+o oprávnění). Bridge proto tyto dvě podoby porovnává jako shodné. Nenulová či
+nečíselná hodnota, ostatní feature flagy a přítomnost samotné cache zůstávají
+chráněné. Po aktualizaci bridge restartuj jeho MCP server, aby načetl nový kód;
+diagnostika `node doctor.js --native --cwd <původní-pracovní-adresář>` neodesílá úkol.
+
+Metadata subprocessy mají v process env i posledním inline nastavení
+`DISABLE_GROWTHBOOK=1`, aby při kontrole samy neobnovovaly chráněnou feature cache
+a experimenty. Volba se nepřidává do task env ani task nastavení; přihlášení ze
+stejného profilu a čerstvé ověření Team politik zůstávají aktivní. Změna chráněné
+cache jiným procesem se dál odmítá před odesláním úkolu.
+
 Běžné osobní preference (`modelSettings` pouze s `effortLevel`, nastavení rozhraní,
 agent teams a uložené MCP definice) samy o sobě nejsou konflikt routingu.
 Explicitní model bridge má přednost před osobním defaultem. Task launch používá
@@ -269,6 +283,13 @@ garance při poruše disku. Automatické mazání profilů/transcriptů bridge n
 Následující záznam popisuje historické kontroly metadat souboru před zavedením
 sémantické kontroly. Nová kontrola řeší doložené kolize provozních zápisů, nikoli
 zpětné vysvětlení všech historických chyb nesouvisejících s globální konfigurací.
+
+Dne 2026-10-08 se na Claude Code 2.1.293 podařilo bez odeslání úkolu reprodukovat
+`NATIVE_DRIFT / GLOBAL_METADATA_CHANGED` během `doctor`: jedinou změnou chráněné
+projekce bylo přidání/odstranění výše popsaného nulového feature flagu. Úzká
+normalizace jeho defaultu řeší tento scénář; není důkazem příčiny všech starších
+odmítnutí ani uzavřením položky 47. Kontroly změn účtu, oprávnění a ostatních
+feature flagů ani zákaz automatického retry se nemění.
 
 Historicky Q-A2 integration běh měl **26 PASS / 4 FAIL**, další nezměněné běhy
 30/30. První nezávislé probes měly 5/7, následně 7/7. Spontánní chyby na

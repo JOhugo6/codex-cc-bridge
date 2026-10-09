@@ -113,6 +113,9 @@ test('native Team tolerates operational global writes during preflight but rejec
   const tls = await teamTlsFixture();
   try {
     f.deps.endpoint = 'https://api.anthropic.com'; f.deps.transportEnv = tls.transportEnv;
+    const initialized = JSON.parse(await fs.readFile(f.globalFile, 'utf8'));
+    initialized.cachedGrowthBookFeatures = {};
+    await fs.writeFile(f.globalFile, JSON.stringify(initialized));
     const execute = f.deps.execute;
     let writes = 0;
     f.deps.execute = async (...args) => {
@@ -120,6 +123,9 @@ test('native Team tolerates operational global writes during preflight but rejec
       if (args[1].includes('doctor')) {
         const global = JSON.parse(await fs.readFile(f.globalFile, 'utf8'));
         global.numStartups = ++writes;
+        global.cachedGrowthBookFeatures ??= {};
+        if (writes % 2) global.cachedGrowthBookFeatures.tengu_misty_aurora = 0;
+        else delete global.cachedGrowthBookFeatures.tengu_misty_aurora;
         await fs.writeFile(f.globalFile, JSON.stringify(global));
       }
       return output;

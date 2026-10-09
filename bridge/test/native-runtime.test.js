@@ -140,6 +140,34 @@ test('parent sanitation is case insensitive, immutable, private, and never resto
   assert.ok(!f.reads.some(p => /credentials/.test(p)));
 }));
 
+test('metadata feature refresh pin overrides parent and ordinary env while task environment keeps the parent value', async () => {
+  for (const inherited of [undefined, '', '0', '1']) {
+    const f = await synthetic();
+    try {
+      if (inherited !== undefined) f.parentEnv.disable_growthbook = inherited;
+      await f.json('config/settings.json', { env: { DISABLE_GROWTHBOOK: '' } });
+      const before = { ...f.parentEnv };
+      let metadata = 0;
+      f.beforeExecute = async (_command, args, options) => {
+        metadata++;
+        assert.equal(options.env.DISABLE_GROWTHBOOK, '1');
+        const guard = JSON.parse(args[args.indexOf('--settings') + 1]);
+        assert.equal(guard.env.DISABLE_GROWTHBOOK, '1', 'last ordinary inline settings retain the metadata pin');
+        assert.equal(options.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '0', 'saved login remains enabled');
+      };
+      const prepared = await f.runtime().preflight({ cwd: f.project });
+      await prepared.launch(descriptor => {
+        assert.equal(descriptor.env.DISABLE_GROWTHBOOK, inherited);
+        assert.equal(Object.hasOwn(descriptor.env, 'DISABLE_GROWTHBOOK'), inherited !== undefined);
+        const guard = JSON.parse(descriptor.args[descriptor.args.indexOf('--settings') + 1]);
+        assert.equal(Object.hasOwn(guard.env, 'DISABLE_GROWTHBOOK'), false, 'task settings add no feature pin');
+      });
+      assert.ok(metadata >= 6, 'pin covers preflight and final auth recheck');
+      assert.deepEqual(f.parentEnv, before);
+    } finally { await f.close(); }
+  }
+});
+
 test('unit fixture canonicalizes owned roots without relaxing containment or native profile aliases', async () => withFixture(async owner => {
   assert.equal(owner.root, await fs.realpath(owner.root));
   const target = path.join(owner.root, 'temp-target'), alias = path.join(owner.root, 'temp-alias');

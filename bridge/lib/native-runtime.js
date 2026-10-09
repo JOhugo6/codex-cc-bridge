@@ -452,7 +452,13 @@ function preparedEnvironment(parent, context, deps, canonicalModel, metadataOnly
   // This verified native gate prevents that preference write during metadata only.
   // Never put it in taskPrepared: inference must retain the canonical 1M context.
   // The source guards remain byte/identity-exact, including other native writes.
-  if (metadataOnly) pins.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
+  if (metadataOnly) {
+    pins.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
+    // Native metadata startup can refresh protected feature/experiment caches.
+    // Stop that diagnostic-only writer; task feature evaluation stays unchanged.
+    // Saved credential-backend selection and Team policy fetches remain active.
+    pins.DISABLE_GROWTHBOOK = '1';
+  }
   pins.ANTHROPIC_BASE_URL = deps.endpoint;
   pins.ANTHROPIC_CONFIG_DIR = path.join(context.appdata, 'Anthropic');
   pins.CLAUDE_SECURESTORAGE_CONFIG_DIR = context.configRootMode === 'default' ? '' : context.nativeConfigRoot;
@@ -606,8 +612,12 @@ function createRuntime(options, deps) {
         if (context.teamPolicy) {
           // Validate and baseline existing cache bytes before each metadata child;
           // no missing-cache warmup or mutation retry is silently authorized.
-          const before = await inspectSources(context, deps);
+          const policyLedger = createSourceLedger(deps);
+          const before = await inspectSources(context, deps, { ledger: policyLedger });
           const result = await execute(['--debug-to-stderr', 'doctor']);
+          // Preserve the source-specific refusal instead of losing it in the
+          // aggregate hash comparison when doctor or another process writes.
+          policyLedger.revalidate();
           if (await inspectSources(context, deps) !== before) throw error('NATIVE_DRIFT');
           teamPolicyStatus(result);
           return;

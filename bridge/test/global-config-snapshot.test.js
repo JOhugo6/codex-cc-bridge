@@ -96,7 +96,9 @@ test('concurrent preparations and launch checks tolerate only operational global
     const stable = { oauthAccount: { accountUuid: 'synthetic' }, projects: { p: { hasTrustDialogAccepted: true } } };
     await f.json(path.relative(f.root, f.globalFile), stable);
     const prepared = await Promise.all(Array.from({ length: 4 }, () => f.runtime().preflight({ cwd: f.project })));
-    await f.json(path.relative(f.root, f.globalFile), { ...stable, numStartups: 4 });
+    await f.json(path.relative(f.root, f.globalFile), { ...stable, numStartups: 4,
+      pluginUsage: { 'synthetic@market': { usageCount: 6, lastUsedAt: 123456, lastUsedNumStartups: 4 } },
+      skillUsage: { synthetic: { usageCount: 3, lastUsedAt: 123456 } } });
     let launched = 0;
     await Promise.all(prepared.map(p => p.launch(() => { launched++; })));
     assert.equal(launched, 4);
@@ -128,4 +130,74 @@ test('a replacement between path check and open is reread, and same-inode edits 
   }, closeSync(fd) { closes++; return fs.closeSync(fd); } };
   assert.notEqual(snapshot(file, inPlace), baseline);
   assert.equal(closes, 2, 'the stale handle was closed and current content reread');
+});
+
+
+test('plugin telemetry and skill recency churn use only their exact validated global schemas', () => {
+  const baseline = { enabledPlugins: { 'example@market': true }, oauthAccount: { accountUuid: 'synthetic' } };
+  const prior = { ...baseline, pluginUsage: { 'example@market': { usageCount: 0, lastUsedAt: 100 } } };
+  const current = { ...baseline, pluginUsage: { 'example@market': { usageCount: 4, lastUsedAt: 200, lastUsedNumStartups: 10 }, another: { usageCount: 1, lastUsedAt: 300 } } };
+  assert.equal(hash(encode(baseline)), hash(encode(prior)));
+  assert.equal(hash(encode(prior)), hash(encode(current)));
+  for (const pluginUsage of [null, [], { p: {} }, { p: { usageCount: -1, lastUsedAt: 2 } },
+    { p: { usageCount: 1, lastUsedAt: 'now' } }, { p: { usageCount: 1, lastUsedAt: 2, lastUsedNumStartups: 1.5 } },
+    { p: { usageCount: 1, lastUsedAt: 2, enabled: true } }, { p: { usageCount: { secret: SENTINEL }, lastUsedAt: 2 } }]) {
+    assert.throws(() => hash(encode({ ...baseline, pluginUsage })), sourceError);
+  }
+  assert.notEqual(hash(encode({ ...baseline, enabledPlugins: { 'example@market': false } })), hash(encode(baseline)));
+  assert.notEqual(hash(encode({ nested: { pluginUsage: prior.pluginUsage } })), hash(encode({ nested: { pluginUsage: current.pluginUsage } })));
+  assert.equal(hash(encode({ skillUsage: { p: { usageCount: 1, lastUsedAt: 100 } } })), hash(encode({ skillUsage: { p: { usageCount: 2, lastUsedAt: 200 } } })));
+  for (const skillUsage of [[], { p: { usageCount: 1 } }, { p: { usageCount: 1, lastUsedAt: 2, lastUsedNumStartups: 3 } }, { p: { usageCount: 1, lastUsedAt: 2, permission: SENTINEL } }]) {
+    assert.throws(() => hash(encode({ skillUsage })), sourceError);
+  }
+  assert.notEqual(hash(encode({ projects: { p: { skillUsage: { count: 1 } } } })), hash(encode({ projects: { p: { skillUsage: { count: 2 } } } })));
+});
+
+test('only the characterized disabled feature default is equivalent to its absence', () => {
+  const base = { cachedGrowthBookFeatures: { tengu_windows_credman: true, unknownFeature: { protected: true } } };
+  const disabled = { cachedGrowthBookFeatures: { ...base.cachedGrowthBookFeatures, tengu_misty_aurora: 0 } };
+  assert.equal(hash(encode(base)), hash(encode(disabled)));
+  for (const value of [3600, -1, null, false, '0', {}, []]) {
+    assert.notEqual(hash(encode(base)), hash(encode({ cachedGrowthBookFeatures: { ...base.cachedGrowthBookFeatures, tengu_misty_aurora: value } })), String(value));
+  }
+  for (const changed of [{ tengu_windows_credman: false }, { unknownFeature: { protected: false } }, { newFeature: 0 }]) {
+    assert.notEqual(hash(encode(base)), hash(encode({ cachedGrowthBookFeatures: { ...disabled.cachedGrowthBookFeatures, ...changed } })));
+  }
+  for (const wrap of [v => ({ tengu_misty_aurora: v }), v => ({ unknown: { cachedGrowthBookFeatures: { tengu_misty_aurora: v } } }),
+    v => ({ projects: { p: { cachedGrowthBookFeatures: { tengu_misty_aurora: v } } } }),
+    v => ({ cachedGrowthBookFeatures: { nested: { tengu_misty_aurora: v } } })]) {
+    assert.notEqual(hash(encode(wrap(0))), hash(encode(wrap(undefined))));
+  }
+  assert.notEqual(hash(encode({})), hash(encode({ cachedGrowthBookFeatures: {} })), 'cache presence stays protected');
+});
+
+test('disabled feature cache churn during metadata, recheck and atomic replacement preserves identity without accepting active changes', async () => {
+  const { teamFixture } = require('./team-fixture');
+  for (const createFixture of [synthetic, teamFixture]) {
+    const f = await createFixture();
+    try {
+      const base = JSON.parse(await fs.promises.readFile(f.globalFile, 'utf8'));
+      base.cachedGrowthBookFeatures = { tengu_windows_credman: true };
+      await f.json(path.relative(f.root, f.globalFile), base);
+      let writes = 0;
+      f.beforeExecute = async () => {
+        const features = { ...base.cachedGrowthBookFeatures, ...(++writes % 2 ? { tengu_misty_aurora: 0 } : {}) };
+        const replacement = path.join(f.root, 'global-replacement.json');
+        await fs.promises.writeFile(replacement, JSON.stringify({ ...base, cachedGrowthBookFeatures: features }));
+        await fs.promises.rename(replacement, f.globalFile);
+      };
+      const prepared = await f.runtime().preflight({ cwd: f.project });
+      const identity = prepared.identity;
+      let submissions = 0;
+      await prepared.launch(() => { submissions++; });
+      assert.deepEqual(await prepared.recheck(), identity);
+      assert.ok(writes >= 6, 'churn covers multiple metadata commands and launch rechecks');
+      assert.equal(submissions, 1);
+      f.beforeExecute = undefined;
+      await f.json(path.relative(f.root, f.globalFile), { ...base,
+        cachedGrowthBookFeatures: { ...base.cachedGrowthBookFeatures, tengu_misty_aurora: 3600 } });
+      await assert.rejects(prepared.launch(() => { submissions++; }), { code: 'NATIVE_DRIFT', reason: 'GLOBAL_METADATA_CHANGED' });
+      assert.equal(submissions, 1, 'active feature changes never reach the submission callback');
+    } finally { await f.close(); }
+  }
 });

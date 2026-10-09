@@ -2,7 +2,7 @@
 const crypto = require('node:crypto');
 const { fail } = require('./config');
 
-// Claude Code 2.1.270 native operational writers were characterized from its
+// Claude Code 2.1.270, 2.1.272 and 2.1.293 writers were characterized from the
 // installed executable and disposable profiles. Unknown fields remain protected.
 // This digest is transient launch state: never export it in runtime identities,
 // errors, logs, or persisted conversation state. Global JSON can contain secrets.
@@ -17,7 +17,23 @@ const numericMap = v => object(v) && Object.values(v).every(count);
 const version = v => typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v);
 const uuid = v => typeof v === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v);
 const iso = v => typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v));
+const pluginUsage = value => object(value) && Object.values(value).every(row => object(row)
+  && Object.hasOwn(row, 'usageCount') && count(row.usageCount)
+  && Object.hasOwn(row, 'lastUsedAt') && nonnegative(row.lastUsedAt)
+  && Object.keys(row).every(key => ['usageCount', 'lastUsedAt', 'lastUsedNumStartups'].includes(key))
+  && (!Object.hasOwn(row, 'lastUsedNumStartups') || count(row.lastUsedNumStartups)));
+const skillUsage = value => object(value) && Object.values(value).every(row => object(row)
+  && Object.hasOwn(row, 'usageCount') && count(row.usageCount)
+  && Object.hasOwn(row, 'lastUsedAt') && nonnegative(row.lastUsedAt)
+  && Object.keys(row).every(key => ['usageCount', 'lastUsedAt'].includes(key)));
 const top = new Map([
+  // 2.1.272 flushes plugin dispatch/LSP usage into these rows. Readers report
+  // plugin-loaded telemetry and disuse suggestions, never enabled-plugin policy.
+  ['pluginUsage', pluginUsage],
+  // Skill use also affects recency-weighted prompt-description ranking and UI.
+  // This contract does not freeze incidental prompt ordering or project content;
+  // skill usage never selects account, provider, trust, or permission policy.
+  ['skillUsage', skillUsage],
   ...`numStartups memoryUsageCount promptQueueUseCount btwUseCount queuedCommandUpHintCount lspRecommendationIgnoredCount`.split(' ').map(k => [k, count]),
   ...['tipsHistory', 'tipLifetimeShownCounts', 'seenNotifications'].map(k => [k, numericMap]),
   ['firstStartTime', iso], ['firstStartVersion', version],
@@ -58,8 +74,14 @@ function globalConfigFingerprint(bytes) {
       // escape bounds merely by sitting below a recognized operational key.
       const next = scope === 'top' && key === 'projects' ? 'projects'
         : scope === 'projects' ? 'project'
-        : scope === 'top' && key === 'oauthAccount' ? 'account' : 'protected';
+        : scope === 'top' && key === 'oauthAccount' ? 'account'
+        : scope === 'top' && key === 'cachedGrowthBookFeatures' ? 'features' : 'protected';
       const child = canonical(v[key], next, depth + 1);
+      // 2.1.293 doctor alternates this cache entry between absent and 0. Its
+      // native reader uses a default of 0 (disabled remote permission timeout),
+      // so only the explicit default is equivalent to absence. Nonzero values
+      // and every other feature remain protected, including credential routing.
+      if (scope === 'features' && key === 'tengu_misty_aurora' && v[key] === 0) continue;
       const validator = scope === 'top' ? top.get(key) : scope === 'project' ? project.get(key)
         : scope === 'account' && key === 'profileFetchedAt' ? nonnegative : undefined;
       if (validator) {
