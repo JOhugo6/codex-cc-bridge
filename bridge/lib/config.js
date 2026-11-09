@@ -46,6 +46,21 @@ function safeError(err) {
   };
   const code = err && Object.hasOwn(messages, err.code) ? err.code : 'BRIDGE_ERROR';
   const reasons = {
+    NATIVE_CONFLICT: {
+      SETTINGS_UNSUPPORTED_FIELD: 'Native settings contain an unsupported field. Review the indicated settings category against the bridge contract; preserve unknown policy until its semantics are established. No task submitted.',
+      SETTINGS_PROHIBITED_ENV: 'Native settings contain a prohibited environment entry. Review environment entries in the indicated settings category; do not bypass routing, authentication or permission checks. No task submitted.',
+      SETTINGS_AUTH_HELPER: 'Native settings configure an authentication helper that this saved-login runtime cannot use. Review the intended authentication configuration. No task submitted.',
+      SETTINGS_MODEL_ROUTING: 'Native settings configure unsupported model routing or fallback behavior. Review model routing in the indicated settings category. No task submitted.',
+      SETTINGS_HOOK_POLICY: 'Native settings contain an unsupported hook policy value. Review hook policy in the indicated settings category. No task submitted.',
+      POLICY_CACHE_SCHEMA: 'Native personal policy cache has an unsupported schema or policy state. Preserve the cache and verify compatibility with the bridge; do not clear or relax policy. No task submitted.',
+      POLICY_CACHE_RESTRICTION: 'Native personal policy cache has an unsupported restriction or restriction value. Preserve the cache until the restriction semantics and bridge compatibility are established. No task submitted.',
+      REMOTE_SETTINGS_CACHE_SCHEMA: 'Native personal remote-settings cache has an unsupported schema. Preserve the cache and verify compatibility with the bridge. No task submitted.',
+      PARENT_ENV_CONFLICT: 'The inherited environment contains an unsupported native runtime control. Review the bridge host environment without bypassing policy or authentication checks. No task submitted.',
+      AUTH_PROFILE_CONFLICT: 'The inherited environment selects an unsupported authentication profile or federation mode. Verify the intended saved-login configuration. No task submitted.',
+      UNSUPPORTED_AUTH_STORE: 'An unsupported native authentication store is present. Preserve it and verify the intended saved-login profile. No task submitted.',
+      LEGACY_CONFIG_PRESENT: 'An unsupported legacy native configuration is present. Preserve it and review profile compatibility. No task submitted.',
+      DESCRIPTOR_AUTH_PRESENT: 'An unsupported native descriptor authentication fallback is present. Preserve it and verify the intended saved-login configuration. No task submitted.',
+    },
     NATIVE_POLICY: {
       POLICY_STATUS: 'Native policy diagnostics reported an unsupported or conflicting account policy status. No task submitted.',
       POLICY_FAILED: 'Native policy refresh reported a failure or changed policy; a stable cached snapshot was not attested. No task submitted.',
@@ -64,7 +79,15 @@ function safeError(err) {
     },
   };
   const reason = typeof err?.reason === 'string' && Object.hasOwn(reasons[code] || {}, err.reason) ? err.reason : undefined;
-  return Object.assign(fail(code, reason ? reasons[code][reason] : messages[code] || 'Bridge operation failed. Inspect persisted status before retrying.'), reason ? { reason } : {});
+  // Sources are static categories, never a filename, registry address or input key.
+  // Only recognized conflict reasons can carry a source across a public boundary.
+  const conflictSources = new Set(['SETTINGS', 'USER_SETTINGS', 'PROJECT_SETTINGS', 'MANAGED_SETTINGS',
+    'MANAGED_REGISTRY', 'POLICY_CACHE', 'REMOTE_SETTINGS_CACHE', 'PARENT_ENV', 'AUTH_STORE',
+    'LEGACY_CONFIG', 'DESCRIPTOR_AUTH']);
+  const source = code === 'NATIVE_CONFLICT' && reason && typeof err?.source === 'string'
+    && conflictSources.has(err.source) ? err.source : undefined;
+  return Object.assign(fail(code, reason ? reasons[code][reason] : messages[code] || 'Bridge operation failed. Inspect persisted status before retrying.'),
+    reason ? { reason } : {}, source ? { source } : {});
 }
 
 // Tool rules become individual argv values for a variadic native option. Never

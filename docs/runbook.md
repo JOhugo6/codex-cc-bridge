@@ -184,8 +184,23 @@ Chybová odpověď může vedle původního `code` obsahovat bezpečný statick�
 MCP, status uložené chyby i native doctor zachovají pouze povolené důvody, nikoli
 cesty, údaje účtu, text nativní diagnostiky nebo obsah politik.
 
+U `NATIVE_CONFLICT` se zachovává také statická kategorie `source`, například
+`USER_SETTINGS`, `PROJECT_SETTINGS`, `MANAGED_SETTINGS`, `MANAGED_REGISTRY`,
+`POLICY_CACHE` nebo `REMOTE_SETTINGS_CACHE`. Nejde o cestu ani název odmítnuté
+položky. Chyba při prvním preflight nevytváří konverzaci: `claude_status` proto
+může vrátit `exists:false`; konkrétní důvod je v odpovědi `claude_turn`.
+U existující připravené konverzace se konflikt uloží do `last_error`, včetně
+odmítnutí před odesláním úlohy, bez změny session, tahu a dokončených requestů.
+
 | `reason` | Význam a další krok |
 |---|---|
+| `SETTINGS_PROHIBITED_ENV` | V označené kategorii settings je nepovolená env položka. Zkontroluj zamýšlené nastavení lokálně; její název ani hodnotu nevkládej do reportu. |
+| `SETTINGS_UNSUPPORTED_FIELD` | Settings obsahují pole mimo ověřené schéma. Ověř kompatibilitu bridge s nativní verzí; neodstraňuj neznámou managed politiku. |
+| `SETTINGS_AUTH_HELPER`, `SETTINGS_MODEL_ROUTING`, `SETTINGS_HOOK_POLICY` | Konflikt se týká auth helperu, modelového routingu/fallbacku nebo hook policy. Ověř zamýšlenou konfiguraci v kategorii `source`. |
+| `POLICY_CACHE_RESTRICTION` | Osobní `policy-limits.json` obsahuje neznámé omezení nebo nepodporovanou podobu jeho hodnoty. Zachovej cache a dolož význam omezení před rozšířením kompatibility. |
+| `POLICY_CACHE_SCHEMA`, `REMOTE_SETTINGS_CACHE_SCHEMA` | Neodpovídá schéma nebo stav příslušné osobní cache. Ověř podporu nativní verze; cache nemaž ani neupravuj kvůli obejití kontroly. |
+| `PARENT_ENV_CONFLICT`, `AUTH_PROFILE_CONFLICT` | Konflikt pochází ze zděděného prostředí nebo volby auth profilu/federace; zkontroluj prostředí hostitele bridge. |
+| `UNSUPPORTED_AUTH_STORE`, `LEGACY_CONFIG_PRESENT`, `DESCRIPTOR_AUTH_PRESENT` | Je přítomen nepodporovaný auth store, legacy config nebo descriptor fallback. Zachovej zdroj a ověř zamýšlený nativní profil. |
 | `POLICY_STATUS`, `POLICY_FAILED` | Nativní stav je nepodporovaný/konfliktní nebo kontrola ohlásila selhání či změnu politik. Ověř stav nativního přihlášení a organizačních politik. |
 | `POLICY_UNATTESTED` | Chybí jednoznačné čerstvé potvrzení obou Team cache; samotné „loaded“ ani „checking“ nestačí. |
 | `POLICY_CACHE_MISSING` | Chybí existující Team cache; bridge ji automaticky nezakládá. |
@@ -216,6 +231,31 @@ nativní MCP konfiguraci. Osobní cache `remote-settings.json` / `policy-limits.
 se kontrolují podle úzkého schématu a zůstávají součástí kontroly změn před spuštěním;
 jejich pouhá přítomnost už nezpůsobuje `NATIVE_CONFLICT`. Neznámé policy/routing
 položky se dál odmítají. Nepodporovaný účet Enterprise nadále vrací `NATIVE_AUTH`.
+
+Pro issue #1 bylo staticky prozkoumáno oficiální
+[`@anthropic-ai/claude-code-win32-x64@2.1.319`](https://registry.npmjs.org/@anthropic-ai/claude-code-win32-x64/2.1.319)
+bez instalace či spuštění; SHA256 executable je
+`2e055732c9d03d22700d9046251a8370b673607bfcc9e4d16a1b0e8fb1345cbd`.
+Nativní definice `allow_connector_file_downloads` řídí stahování souborů
+z claude.ai konektorů a při chybějící cache či fail-open výsledku vyžaduje odmítnutí.
+Bridge připouští pouze přesnou podobu `{ "allowed": boolean }` a ponechává hodnotu
+i její vynucení nativnímu procesu.
+
+Význam hlášeného `allow_cobalt_plinth_alkanet` se tímto šetřením nepodařilo
+doložit: přesný řetězec v uvedeném balíčku není, podobný název jiného omezení
+není důkazem shodného významu. Klíč se proto dál odmítá jako
+`POLICY_CACHE_RESTRICTION`. Předej správci bridge sanitizované `code/reason/source`
+a verzi; restart transportu ani mazání cache tento nepodporovaný vstup neřeší.
+
+`CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS` zůstává v settings env
+zakázaná bez ohledu na hodnotu či velikost písmen. V nativním 2.1.319 zasahuje
+do kontrol nebezpečných mazacích příkazů v bypass režimu, nejde o běžnou preferenci
+rozhraní. Očekávaný důvod je `SETTINGS_PROHIBITED_ENV`; ve zděděném prostředí
+`PARENT_ENV_CONFLICT`. Ani přijetí známého connector omezení toto odmítnutí nemění.
+Preflight vrací první nalezený konflikt: po legitimní opravě jednoho zdroje
+může následovat jiný důvod. Bridge kvůli tomu žádné settings, policy či přihlášení
+automaticky nemění. Statická kontrola balíčku neprokazuje plnou provozní
+kompatibilitu s 2.1.319.
 
 `CLAUDE_AUTH_FAILED` (například native 401) po zahájení úlohy už není totéž co
 preflight chyba. Neprováděj automatický login/refresh ani znovuodeslání. Nejprve

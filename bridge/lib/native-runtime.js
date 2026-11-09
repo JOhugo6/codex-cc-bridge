@@ -24,7 +24,7 @@ const ORG_PERSONAL = 'Organization policy: not applicable to Pro and Max account
 const LIMIT = 256 * 1024;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const error = (code, reason) => safeError(Object.assign(fail(code, {
+const error = (code, reason, source) => safeError(Object.assign(fail(code, {
   NATIVE_INPUT: 'Invalid native runtime input.',
   NATIVE_MODEL: 'Unsupported model. Select a model from the native runtime catalog.',
   NATIVE_SOURCE: 'Native settings source is malformed, unreadable, or unsupported. No task submitted.',
@@ -36,7 +36,7 @@ const error = (code, reason) => safeError(Object.assign(fail(code, {
   NATIVE_POLICY: 'Native account policy eligibility or a fresh Team policy snapshot could not be established. No task submitted.',
   NATIVE_DIAGNOSTIC: 'Native metadata command failed or exceeded its bounds. No task submitted.',
   NATIVE_DRIFT: 'Native sources or profile identity changed before submission. Run preflight again.',
-}[code] || 'Native runtime validation failed.'), { reason: reason || (code === 'NATIVE_DRIFT' ? 'SOURCES_CHANGED' : undefined) }));
+}[code] || 'Native runtime validation failed.'), { reason: reason || (code === 'NATIVE_DRIFT' ? 'SOURCES_CHANGED' : undefined), source }));
 
 function freeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -127,17 +127,17 @@ const MANAGED_FIELDS = new Set(`$schema permissions sandbox disableAllHooks allo
 const PERMISSION_FIELDS = new Set(`allow deny ask defaultMode additionalDirectories disableBypassPermissionsMode
   blockReadsOutsideWorkingDirectories`.split(/\s+/));
 
-function validateSettings(value, { managed = false } = {}) {
+function validateSettings(value, { managed = false, source = managed ? 'MANAGED_SETTINGS' : 'SETTINGS' } = {}) {
   if (!object(value)) throw error('NATIVE_SOURCE');
   for (const [key, val] of Object.entries(value)) {
-    if (!(managed ? MANAGED_FIELDS : ORDINARY_FIELDS).has(key)) throw error('NATIVE_CONFLICT');
+    if (!(managed ? MANAGED_FIELDS : ORDINARY_FIELDS).has(key)) throw error('NATIVE_CONFLICT', 'SETTINGS_UNSUPPORTED_FIELD', source);
     if (key === 'env') {
-      for (const name of Object.keys(envEntries(val))) if (prohibitedEnv(name)) throw error('NATIVE_CONFLICT');
+      for (const name of Object.keys(envEntries(val))) if (prohibitedEnv(name)) throw error('NATIVE_CONFLICT', 'SETTINGS_PROHIBITED_ENV', source);
     }
-    if (key === 'apiKeyHelper' && val !== '') throw error('NATIVE_CONFLICT');
-    if (key === 'fallbackModel' && (!Array.isArray(val) || val.length)) throw error('NATIVE_CONFLICT');
-    if (key === 'switchModelsOnFlag' && val !== false) throw error('NATIVE_CONFLICT');
-    if (key === 'modelOverrides' && (!object(val) || Object.keys(val).length)) throw error('NATIVE_CONFLICT');
+    if (key === 'apiKeyHelper' && val !== '') throw error('NATIVE_CONFLICT', 'SETTINGS_AUTH_HELPER', source);
+    if (key === 'fallbackModel' && (!Array.isArray(val) || val.length)) throw error('NATIVE_CONFLICT', 'SETTINGS_MODEL_ROUTING', source);
+    if (key === 'switchModelsOnFlag' && val !== false) throw error('NATIVE_CONFLICT', 'SETTINGS_MODEL_ROUTING', source);
+    if (key === 'modelOverrides' && (!object(val) || Object.keys(val).length)) throw error('NATIVE_CONFLICT', 'SETTINGS_MODEL_ROUTING', source);
     // Per-model effort preferences do not select a provider or replace a model.
     // Keep the nested allowlist explicit: future routing fields must not slip in.
     if (key === 'modelSettings') {
@@ -145,7 +145,7 @@ function validateSettings(value, { managed = false } = {}) {
       for (const preferences of Object.values(val)) {
         if (!object(preferences)) throw error('NATIVE_SOURCE');
         for (const [field, preference] of Object.entries(preferences)) {
-          if (field !== 'effortLevel') throw error('NATIVE_CONFLICT');
+          if (field !== 'effortLevel') throw error('NATIVE_CONFLICT', 'SETTINGS_MODEL_ROUTING', source);
           if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(preference)) throw error('NATIVE_SOURCE');
         }
       }
@@ -160,7 +160,7 @@ function validateSettings(value, { managed = false } = {}) {
     // A personal preferred model is preserved, but --model is authoritative. Managed
     // model preferences/allowlists are deliberately NOT overridden by this adapter.
     if (key === 'model' && (typeof val !== 'string' || !val.trim() || val.includes('\0'))) throw error('NATIVE_SOURCE');
-    if (key === 'disableAllHooks' && typeof val !== 'boolean') throw error('NATIVE_CONFLICT');
+    if (key === 'disableAllHooks' && typeof val !== 'boolean') throw error('NATIVE_CONFLICT', 'SETTINGS_HOOK_POLICY', source);
     if (['allowManagedMcpServersOnly', 'allowManagedHooksOnly', 'allowManagedPermissionRulesOnly'].includes(key) && typeof val !== 'boolean') throw error('NATIVE_SOURCE');
     if (key === '$schema' && typeof val !== 'string') throw error('NATIVE_SOURCE');
     if (key === 'permissions') {
@@ -183,25 +183,27 @@ function validatePersonalCache(value, kind) {
   if (!object(value)) throw error('NATIVE_SOURCE');
   if (kind === 'remote-settings.json') {
     const { channelsEnabled, ...managed } = value;
-    if (channelsEnabled !== undefined && typeof channelsEnabled !== 'boolean') throw error('NATIVE_CONFLICT');
-    validateSettings(managed, { managed: true });
-    if (!Object.keys(value).length) throw error('NATIVE_CONFLICT');
+    if (channelsEnabled !== undefined && typeof channelsEnabled !== 'boolean') throw error('NATIVE_CONFLICT', 'REMOTE_SETTINGS_CACHE_SCHEMA', 'REMOTE_SETTINGS_CACHE');
+    validateSettings(managed, { managed: true, source: 'REMOTE_SETTINGS_CACHE' });
+    if (!Object.keys(value).length) throw error('NATIVE_CONFLICT', 'REMOTE_SETTINGS_CACHE_SCHEMA', 'REMOTE_SETTINGS_CACHE');
     return;
   }
   if (Object.keys(value).some(k => !['restrictions', 'compliance_taints', 'monitoring_notice', 'defaults'].includes(k))
       || !object(value.restrictions) || !object(value.defaults)
       || !Array.isArray(value.compliance_taints) || value.compliance_taints.length
-      || value.monitoring_notice !== null) throw error('NATIVE_CONFLICT');
+      || value.monitoring_notice !== null) throw error('NATIVE_CONFLICT', 'POLICY_CACHE_SCHEMA', 'POLICY_CACHE');
   for (const [key, restriction] of Object.entries(value.restrictions)) {
-    if (!['allow_quick_web_setup', 'enforce_web_search_mcp_isolation'].includes(key)
+    // Native 2.1.319 declares this connector download restriction and checks it
+    // before downloads. Preserve both allowed/denied values for native to enforce.
+    if (!['allow_quick_web_setup', 'enforce_web_search_mcp_isolation', 'allow_connector_file_downloads'].includes(key)
         || !object(restriction) || Object.keys(restriction).length !== 1
-        || typeof restriction.allowed !== 'boolean') throw error('NATIVE_CONFLICT');
+        || typeof restriction.allowed !== 'boolean') throw error('NATIVE_CONFLICT', 'POLICY_CACHE_RESTRICTION', 'POLICY_CACHE');
   }
   if (Object.keys(value.defaults).some(k => k !== 'remote_control_at_startup')
-      || (value.defaults.remote_control_at_startup !== undefined && value.defaults.remote_control_at_startup !== false)) throw error('NATIVE_CONFLICT');
+      || (value.defaults.remote_control_at_startup !== undefined && value.defaults.remote_control_at_startup !== false)) throw error('NATIVE_CONFLICT', 'POLICY_CACHE_SCHEMA', 'POLICY_CACHE');
 }
 
-function parseSettings(text, managed, mcp = false, cache) {
+function parseSettings(text, managed, mcp = false, cache, source) {
   try {
     if (Buffer.byteLength(text) > LIMIT) throw error('NATIVE_SOURCE');
     const value = JSON.parse(text.replace(/^\uFEFF/, ''));
@@ -210,8 +212,8 @@ function parseSettings(text, managed, mcp = false, cache) {
       if (!object(value) || !object(value.mcpServers) || Object.keys(value).some(k => k !== 'mcpServers')) throw error('NATIVE_SOURCE');
       return;
     }
-    validateSettings(value, { managed });
-  } catch (e) { throw error(e.code === 'NATIVE_CONFLICT' ? e.code : 'NATIVE_SOURCE'); }
+    validateSettings(value, { managed, source });
+  } catch (e) { throw e.code === 'NATIVE_CONFLICT' ? safeError(e) : error('NATIVE_SOURCE'); }
 }
 
 function statStamp(s) { return [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs].join(':'); }
@@ -351,7 +353,7 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     ledger.record(file, value, nativeTouch);
     return value;
   }
-  async function regular(file, { managed = false, mcp = false, presenceOnly = false, stampOnly = false, cache } = {}) {
+  async function regular(file, { managed = false, mcp = false, presenceOnly = false, stampOnly = false, cache, source, conflictReason } = {}) {
     const nativeTouch = cache === 'policy-limits.json';
     const s = await stat(file, nativeTouch);
     if (!s) {
@@ -359,12 +361,12 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
       entries.push([file, 'absent']); return;
     }
     if (s.isSymbolicLink() || !s.isFile()) throw error('NATIVE_SOURCE');
-    if (presenceOnly) throw error('NATIVE_CONFLICT');
+    if (presenceOnly) throw error('NATIVE_CONFLICT', conflictReason, source);
     if (stampOnly) { entries.push([file, statStamp(s)]); return; }
     if (s.size > LIMIT) throw error('NATIVE_SOURCE');
     let text;
     try { text = await deps.fs.readFile(file, 'utf8'); } catch { throw error('NATIVE_SOURCE'); }
-    parseSettings(text, managed, mcp, cache);
+    parseSettings(text, managed, mcp, cache, source);
     const after = await stat(file, nativeTouch);
     const sourceStamp = nativeTouch ? cacheStamp : statStamp;
     if (!after || sourceStamp(s) !== sourceStamp(after)) throw error('NATIVE_DRIFT', sourceDriftReason(file));
@@ -373,7 +375,8 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
   async function directory(dir, rejectPresence = false) {
     const s = await stat(dir);
     if (!s) { entries.push([dir, 'absent']); return []; }
-    if (rejectPresence || !s.isDirectory() || s.isSymbolicLink()) throw error(rejectPresence ? 'NATIVE_CONFLICT' : 'NATIVE_SOURCE');
+    if (rejectPresence) throw error('NATIVE_CONFLICT', 'UNSUPPORTED_AUTH_STORE', 'AUTH_STORE');
+    if (!s.isDirectory() || s.isSymbolicLink()) throw error('NATIVE_SOURCE');
     try {
       const names = (await deps.fs.readdir(dir)).sort();
       ledger.inventory(dir, names);
@@ -392,29 +395,30 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
   for (const name of ['remote-settings.json', 'policy-limits.json']) await regular(path.join(configRoot, name), { cache: name });
   await directory(path.join(appdata, 'Anthropic'), true);
   await directory(path.join(home, '.config/anthropic'), true);
-  await regular(path.join(configRoot, 'settings.json'));
-  await regular(path.join(configRoot, 'settings.local.json'));
+  await regular(path.join(configRoot, 'settings.json'), { source: 'USER_SETTINGS' });
+  await regular(path.join(configRoot, 'settings.local.json'), { source: 'USER_SETTINGS' });
   // The legacy global config can contain credentials; unsupported rather than parsed.
-  await regular(path.join(configRoot, '.config.json'), { presenceOnly: true });
+  await regular(path.join(configRoot, '.config.json'), { presenceOnly: true, conflictReason: 'LEGACY_CONFIG_PRESENT', source: 'LEGACY_CONFIG' });
   const visited = new Set();
   for (let dir = cwd; ; dir = path.dirname(dir)) {
     if (visited.has(dir)) throw error('NATIVE_SOURCE');
     visited.add(dir);
-    for (const name of ['settings.json', 'settings.local.json']) await regular(path.join(dir, '.claude', name));
+    for (const name of ['settings.json', 'settings.local.json']) await regular(path.join(dir, '.claude', name), { source: 'PROJECT_SETTINGS' });
     await regular(path.join(dir, '.mcp.json'), { mcp: true });
     if (dir === (deps.ancestorBoundary || path.parse(dir).root)) break;
   }
   for (const root of deps.systemRoots(environment)) {
-    await regular(path.join(root, 'managed-settings.json'), { managed: true });
+    await regular(path.join(root, 'managed-settings.json'), { managed: true, source: 'MANAGED_SETTINGS' });
     const dropins = path.join(root, 'managed-settings.d');
     for (const name of await directory(dropins)) {
-      if (/\.json$/i.test(name)) await regular(path.join(dropins, name), { managed: true });
+      if (/\.json$/i.test(name)) await regular(path.join(dropins, name), { managed: true, source: 'MANAGED_SETTINGS' });
     }
     await regular(path.join(root, 'managed-mcp.json'), { mcp: true });
   }
   // Native's inherited-descriptor fallback files are fixed absolute paths, even on Windows.
   for (const name of ['.oauth_token', '.api_key', '.session_ingress_token']) {
-    await regular(path.join(deps.descriptorRoot || path.resolve(path.parse(cwd).root, 'home/claude/.claude/remote'), name), { presenceOnly: true });
+    await regular(path.join(deps.descriptorRoot || path.resolve(path.parse(cwd).root, 'home/claude/.claude/remote'), name),
+      { presenceOnly: true, conflictReason: 'DESCRIPTOR_AUTH_PRESENT', source: 'DESCRIPTOR_AUTH' });
   }
   let rows;
   try { rows = await deps.registry(environment, deps.execute); } catch { throw error('NATIVE_SOURCE'); }
@@ -425,7 +429,7 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     if (!expected.delete(id) || typeof row.present !== 'boolean') throw error('NATIVE_SOURCE');
     if (row.present) {
       if (!['String', 'ExpandString'].includes(row.kind) || typeof row.raw !== 'string' || typeof row.value !== 'string') throw error('NATIVE_SOURCE');
-      parseSettings(row.raw, true); parseSettings(row.value, true);
+      parseSettings(row.raw, true, false, undefined, 'MANAGED_REGISTRY'); parseSettings(row.value, true, false, undefined, 'MANAGED_REGISTRY');
     }
     entries.push([id, row.present ? hash(JSON.stringify([row.kind, row.raw, row.value])) : 'absent']);
   }
@@ -437,9 +441,9 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
 function preparedEnvironment(parent, context, deps, canonicalModel, metadataOnly = false) {
   const env = {};
   for (const [name, value] of Object.entries(parent)) {
-    if (HOST_NAMES.test(name) && value !== '' && !(FALSE_PINS.includes(name) && value === '0')) throw error('NATIVE_CONFLICT');
+    if (HOST_NAMES.test(name) && value !== '' && !(FALSE_PINS.includes(name) && value === '0')) throw error('NATIVE_CONFLICT', 'PARENT_ENV_CONFLICT', 'PARENT_ENV');
     if (PIN_NAMES.has(name) || DROP_PARENT.test(name)) continue;
-    if (/^(?:CLAUDE_|_CLAUDE_)/.test(name) && !SAFE_NATIVE_ENV.has(name) && !ROOT_NAMES.has(name)) throw error('NATIVE_CONFLICT');
+    if (/^(?:CLAUDE_|_CLAUDE_)/.test(name) && !SAFE_NATIVE_ENV.has(name) && !ROOT_NAMES.has(name)) throw error('NATIVE_CONFLICT', 'PARENT_ENV_CONFLICT', 'PARENT_ENV');
     env[name] = value;
   }
   const pins = Object.fromEntries(EMPTY_PINS.map(k => [k, '']));
@@ -533,7 +537,7 @@ function createRuntime(options, deps) {
   if (!object(options) || Object.keys(options).some(k => !['executable', 'configRoot', 'parentEnv', 'model'].includes(k))) throw error('NATIVE_INPUT');
   if (deps.platform !== 'win32') throw error('NATIVE_PLATFORM');
   const parent = envEntries(options.parentEnv === undefined ? process.env : options.parentEnv);
-  if (['ANTHROPIC_PROFILE', 'ANTHROPIC_FEDERATION_RULE_ID'].some(k => parent[k])) throw error('NATIVE_CONFLICT');
+  if (['ANTHROPIC_PROFILE', 'ANTHROPIC_FEDERATION_RULE_ID'].some(k => parent[k])) throw error('NATIVE_CONFLICT', 'AUTH_PROFILE_CONFLICT', 'PARENT_ENV');
   const configuredModel = options.model;
   resolveModel(undefined, configuredModel);
   if (typeof options.executable !== 'string' || !path.isAbsolute(options.executable) || !/\.exe$/i.test(options.executable)) throw error('NATIVE_INPUT');

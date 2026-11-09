@@ -31,7 +31,7 @@ function internals() {
   const filename = path.resolve(__dirname, '../lib/native-runtime.js');
   const loaded = new Module(filename, module);
   loaded.filename = filename; loaded.paths = Module._nodeModulePaths(path.dirname(filename));
-  loaded._compile(syncFs.readFileSync(filename, 'utf8') + '\nmodule.exports.private = {createRuntime, production, inspectSources, preparedEnvironment, envEntries, accountFingerprint, FLAGS, EMPTY_PINS, FALSE_PINS, MODEL_PINS, PROVIDERS, registrySettings};', filename);
+  loaded._compile(syncFs.readFileSync(filename, 'utf8') + '\nmodule.exports.private = {createRuntime, production, inspectSources, preparedEnvironment, envEntries, accountFingerprint, validatePersonalCache, parseSettings, FLAGS, EMPTY_PINS, FALSE_PINS, MODEL_PINS, PROVIDERS, registrySettings};', filename);
   return loaded.exports;
 }
 function emptyRegistry() {

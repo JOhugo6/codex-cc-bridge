@@ -15,6 +15,8 @@ async function canonicalDir(dir) {
   } catch (err) { throw fail('INVALID_WORKING_DIR', `${dir}: ${err.message}`); }
 }
 const sameDir = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+const errorRecord = err => ({ code: err.code, message: err.message,
+  ...(err.reason ? { reason: err.reason } : {}), ...(err.source ? { source: err.source } : {}) });
 
 class ClaudeBridge {
   // Dependency injection is programmatic only. MCP inputs/env cannot select code.
@@ -65,10 +67,22 @@ class ClaudeBridge {
       // Other root/routing conflicts remain for the native adapter to reject.
       const parentEnv = Object.fromEntries(Object.entries(this.settings.parentEnv || process.env)
         .filter(([key]) => key.toUpperCase() !== 'CLAUDE_CONFIG_DIR'));
-      const runtime = this.createRuntime({ executable: this.settings.command, parentEnv,
-        ...(this.settings.configRoot === undefined ? {} : { configRoot: this.settings.configRoot }) });
-      const prepared = await runtime.preflight({ cwd, model: selectedModel,
-        ...(st ? { expectedIdentity: st.runtime } : {}) });
+      let prepared;
+      try {
+        const runtime = this.createRuntime({ executable: this.settings.command, parentEnv,
+          ...(this.settings.configRoot === undefined ? {} : { configRoot: this.settings.configRoot }) });
+        prepared = await runtime.preflight({ cwd, model: selectedModel,
+          ...(st ? { expectedIdentity: st.runtime } : {}) });
+      } catch (err) {
+        const sanitized = safeError(err);
+        // Failed first preflight must not invent a session. An existing ready
+        // conversation retains its identity, turn, requests and status; only its
+        // sanitized conflict diagnostic is updated for status after restart.
+        if (st && sanitized.code === 'NATIVE_CONFLICT') {
+          await this.store.save(id, { ...st, last_error: errorRecord(sanitized) }).catch(() => {});
+        }
+        throw sanitized;
+      }
       validateIdentity(prepared.identity);
       if (prepared.identity.model !== selectedModel || prepared.identity.cwd !== cwd) throw fail('NATIVE_DRIFT');
       if (st && Object.keys(st.runtime).some(k => st.runtime[k] !== prepared.identity[k])) throw fail('NATIVE_DRIFT');
@@ -106,15 +120,15 @@ class ClaudeBridge {
           ...(result.model_evidence === undefined ? {} : { model_evidence: result.model_evidence }),
           model: st.model, runtime: st.runtime,
           turn: st.turn + 1, working_dir: st.working_dir, replayed: false };
-        const completed = { ...st, turn: output.turn, status: 'ready', pending: null,
+        const completed = { ...st, turn: output.turn, status: 'ready', pending: null, last_error: null,
           updated_at: new Date().toISOString(), last_result: output };
         if (request_id) completed.requests = [...st.requests, { id: request_id, hash: messageHash, output }];
         await this.store.save(id, completed);
         return output;
       } catch (err) {
         const sanitized = safeError(err);
-        const failed = submitted ? { ...pending, status: 'uncertain',
-          last_error: { code: sanitized.code, message: sanitized.message, ...(sanitized.reason ? { reason: sanitized.reason } : {}) } } : readySnapshot;
+        const failed = submitted ? { ...pending, status: 'uncertain', last_error: errorRecord(sanitized) }
+          : sanitized.code === 'NATIVE_CONFLICT' ? { ...readySnapshot, last_error: errorRecord(sanitized) } : readySnapshot;
         // If restoration itself fails, the durable pending marker remains safe.
         await this.store.save(id, failed).catch(() => {});
         throw sanitized;
@@ -131,7 +145,7 @@ class ClaudeBridge {
       turn: st.turn, status: st.status, model: st.model, policy: st.policy,
       runtime: st.version === 2 ? st.runtime : null,
       pending: st.pending || null,
-      last_error: st.last_error ? { code: safeError(st.last_error).code, message: safeError(st.last_error).message, ...(safeError(st.last_error).reason ? { reason: safeError(st.last_error).reason } : {}) } : null,
+      last_error: st.last_error ? errorRecord(safeError(st.last_error)) : null,
       last_result: st.last_result || null,
       state_file: this.store.file(id),
     };

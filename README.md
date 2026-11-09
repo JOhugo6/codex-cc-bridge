@@ -150,6 +150,12 @@ omezeným čekáním; nespouští nativní CLI/auth/model. `--native` používá
 runtime validaci a vypisuje sanitizovaná metadata kompatibility/profilu, nikoli
 certifikaci tokenu/entitlementu. Nevypisuje raw auth JSON ani prostředí.
 
+Native konflikty obsahují povolený statický `reason` a případně kategorii
+`source`: například `SETTINGS_PROHIBITED_ENV` oproti
+`POLICY_CACHE_RESTRICTION`. Stejnou diagnostiku zachová MCP, uložený
+`last_error` existující konverzace a `doctor --native`.
+[Význam důvodů a postup při issue #1](docs/runbook.md#native-chyby-před-spuštěním).
+
 `npm test` explicitně zahrnuje všechny udržované offline suites včetně nativní
 charakterizace/integrace a instalátoru, bez shell globů a živého smoke.
 `test:unit`, `test:native`, `test:installer` jsou dílčí skupiny. Chybějící native/

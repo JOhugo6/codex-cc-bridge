@@ -153,6 +153,12 @@ bounded requests, no native CLI/auth/model call. `--native` reuses frozen runtim
 validation and emits sanitized compatibility/profile metadata, not token or
 entitlement certification. Errors/help never dump native auth JSON or environment.
 
+Native conflicts include an allowlisted static `reason` and optional `source`
+category, for example `SETTINGS_PROHIBITED_ENV` versus
+`POLICY_CACHE_RESTRICTION`. MCP, an existing conversation's persisted
+`last_error`, and `doctor --native` preserve the same diagnostics.
+[Reason meanings and issue #1 handling](docs/runbook.md#native-chyby-před-spuštěním).
+
 `npm test` explicitly enumerates every maintained offline suite, including native
 characterization/integration and installer tests; no shell globs or live smoke.
 `test:unit`, `test:native`, `test:installer` expose subsets. Missing native/Windows/

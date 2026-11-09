@@ -127,7 +127,10 @@ async function main(args = process.argv.slice(2), env = process.env) {
     // Never print exception messages/stacks, raw auth output, env values or paths.
     const code = NATIVE_CODES.has(err?.code) || ['DOCTOR_ARGUMENTS', 'MCP_SCHEMA', 'MCP_HANDSHAKE', 'INVALID_CONFIG'].includes(err?.code)
       ? err.code : 'DOCTOR_FAILED';
-    process.stderr.write(JSON.stringify({ ok: false, mode, code, ...(safeError(err).reason ? { reason: safeError(err).reason, message: safeError(err).message } : {}), task_submitted: false,
+    const sanitized = safeError(err);
+    process.stderr.write(JSON.stringify({ ok: false, mode, code,
+      ...(sanitized.reason ? { reason: sanitized.reason, message: sanitized.message } : {}),
+      ...(sanitized.source ? { source: sanitized.source } : {}), task_submitted: false,
       live_credentials_verified: false, model_entitlement_verified: false,
       note: 'No inference attempted. See --help and docs/runbook.md; do not bypass policy or automatically retry drift.' }) + '\n');
     return 1;
