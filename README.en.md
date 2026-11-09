@@ -159,6 +159,11 @@ category, for example `SETTINGS_PROHIBITED_ENV` versus
 `last_error`, and `doctor --native` preserve the same diagnostics.
 [Reason meanings and issue #1 handling](docs/runbook.md#native-chyby-před-spuštěním).
 
+[Operational issue #2](docs/runbook.md#issue-2-provozní-kompatibilita-21319) remains
+open: exact-build 2.1.319 has verified partial fixes and a safe cleanup for the
+ineffective settings env entry, while the unknown policy restriction remains
+refused. Tests on another profile do not establish affected-profile success.
+
 `npm test` explicitly enumerates every maintained offline suite, including native
 characterization/integration and installer tests; no shell globs or live smoke.
 `test:unit`, `test:native`, `test:installer` expose subsets. Missing native/Windows/

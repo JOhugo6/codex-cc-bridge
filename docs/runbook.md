@@ -257,6 +257,110 @@ může následovat jiný důvod. Bridge kvůli tomu žádné settings, policy č
 automaticky nemění. Statická kontrola balíčku neprokazuje plnou provozní
 kompatibilitu s 2.1.319.
 
+### Issue #2: provozní kompatibilita 2.1.319
+
+Doctor v přesném buildu 2.1.319 používá pro osobní předplatné nový výsledek
+`Organization policy: not applicable to individual subscription plans`.
+Bridge jej přijímá pouze pro tuto verzi, po ověření podporovaného účtu, a
+vyžaduje právě jeden řádek vzdálených settings i organizačního stavu.
+Historický osobní výsledek zůstává podporovaný; neznámý stav, duplicitní výsledek,
+chyba settings ani obecné „Loaded“ se tím nestávají potvrzením způsobilosti.
+Tato úprava nemění validaci policy cache ani typy podporovaných účtů.
+
+Oprava diagnostiky v issue #1 neprokazuje, že postižený profil dokáže spustit
+úlohu. Provozní issue #2 zůstává otevřené, dokud nový read-only `claude_turn`
+přes instalovaný registrovaný bridge nevrátí skutečný obsah Claude na původním
+profilu a přihlášení. Úspěch syntetických testů, handshake či doctor na jiném
+profilu tento důkaz nenahrazuje.
+
+V přesném oficiálním Windows x64 buildu 2.1.319 je uvedená proměnná ignorována
+ve `settings.env`, ale má účinek ve spouštěcím prostředí. Pro tento build je
+podporovaný úklid odstranit pouze položku
+`env.CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS` z uživatelského settings
+souboru; ostatní env položky, oprávnění a celý policy cache ponech beze změny.
+Prázdné `env: {}` je přípustné. Proměnnou nepřenášej do shellu, registrace MCP
+ani jiné launch konfigurace. Běžný podporovaný režim `bypassPermissions` tím
+zůstává zachovaný, bez dodatečné výjimky pro kritická mazání.
+
+Tento postup platí pro doložený build 2.1.319, nikoli automaticky pro všechny
+verze novější než 2.1.311. [Oficiální dokumentace](https://code.claude.com/docs/en/permission-modes#turn-off-the-critical-path-removal-prompt-in-bypasspermissions-mode)
+rozlišuje launch env od settings env; testy přesného executable ověřují filtraci
+i zachování ochrany. Bridge sám žádný uživatelský settings soubor nemění a
+proměnnou dál odmítá ve settings i process env, protože podporuje širší řadu
+nativních verzí. Úklid řeší pouze tento samostatný konflikt. Nedokládá původ ani
+význam `allow_cobalt_plinth_alkanet`.
+
+Před zásahem do konfigurace zkontroluj stav související konverzace.
+`pending` nebo `uncertain` se nesmí automaticky znovu odeslat, smazat ani
+nahradit novou session. První odmítnutý preflight bez konverzace není rozpracovaná
+úloha. Po oprávněné změně konfigurace použij čerstvý preflight a zachovej původní
+výběr executable, profilu, účtu i modelu.
+
+Ověření na postiženém PC:
+
+Předpokladem je doložený význam omezení nebo ověřená nativní náprava. Nativní
+2.1.319 umí číst libovolně pojmenovaná booleovská omezení; jejich odstranění
+může změnit zamítnutí na povolení. Absence přesného názvu v executable ani podobný
+název jiného klíče proto neospravedlňují výjimku.
+
+Pro další rozhodnutí stačí z postiženého PC bezpečné výsledky lokálních kontrol:
+
+- Shoda registrované instalace, zamýšleného profilu a saved identity jako
+  `true/false/unknown`; verze a SHA256 native/bridge souborů.
+- Přítomnost přesného klíče, tvar „pouze booleovské `allowed`“, a přítomnost
+  dalších neznámých klíčů jako booleany. Hodnotu omezení ani hash malého policy
+  těla nepublikuj.
+- Typ/přítomnost sidecarů `.stamp.json`, `.signature.json` a
+  `.signature-iat.json` bez jejich obsahu. Stamp porovnává lokální tělo
+  a principal; není dokladem serverového původu. Samotná přítomnost podpisu
+  také nestačí. Pokud je dostupné podporované nativní ověření, uveď jeho verdict
+  a zda ověřilo produkční trust root, celé tělo, typ politiky, úplnou vazbu
+  k zamýšlenému účtu/organizaci, administrativní piny i časovou platnost.
+  Nedostupné ověření označ `unknown`; výsledek nevytvářej vlastní domněnkou.
+- Autoritativní deklarace přesného klíče od Anthropic: význam obou hodnot,
+  ovládaná funkce a její enforcement, default při absenci, verze a původ záznamu.
+  Alternativou je doložený původ a aktuálnost úplné baseline s podporovaným
+  postupem obnovy, který zachová všechna zamýšlená omezení.
+
+Obyčejné nativní načtení může policy znovu ověřit, ale není prokázanou nápravou
+tohoto případu: odpověď 304 ponechá původní tělo, odpověď 200 může klíč ponechat
+i změnit. Nativní autentizační refresh může cache nejprve smazat; ani běžné
+načítání nemá ve všech chybových větvích záruku zachování souboru. Nepoužívej
+login/refresh/clear-cache jako pokus odstranit neznámé omezení. Lokální checksum,
+starý backup ani úspěšný refresh bez doloženého výsledku nejsou baseline
+pro obnovu. Původ přesného záznamu a bezpečná náprava zůstávají otevřené.
+
+1. Ověř instalovaný bridge a executable 2.1.319 proti zamýšlené instalaci.
+   Záznam o verzi či SHA256 nesmí obsahovat údaje účtu nebo raw settings/policy.
+2. Vyřeš neznámé policy omezení jen na základě doložených nativních semantics
+   nebo ověřené podporované nápravy. Nemaž ani nepřejmenovávej cache a
+   nepřidávej blanket výjimku. Pokud tato podmínka splněná není, další pokus
+   o task není důkazem nápravy.
+3. Pro nový test zvol jediné stabilní `conversation_id` a unikátní `request_id`.
+   Přes registrovaný `claude_bridge` nejprve ověř status; `claude_turn` pošli
+   bez modelového či profilového override, s původním existujícím absolutním cwd
+   a zprávou: `Do not use tools or read or modify files. Reply exactly ISSUE2_READONLY_OK.`
+4. Ověř skutečnou odpověď, runtime verzi, zamýšlený profil a přihlášení
+   lokálně. Publikuj jen výsledek shody, nikoli cesty či identifikátory účtu.
+   Opakuj přesně stejný dokončený request pouze pro cached replay: musí zůstat
+   stejná session a tah, `replayed:true`. Status musí odpovídat dokončenému tahu.
+5. Při výpadku nejprve `claude_status` se stejným ID. Nezakládej automaticky
+   náhradní request či session. U chyby sdílej pouze bezpečný `code/reason/source`,
+   stav a verzi; raw nativní diagnostiku, cache ani nastavení neposílej.
+
+Přesný nativní test je oddělený od běžných CI prerequisites:
+nastav výslovně absolutní cestu k ověřenému executable 2.1.319:
+
+```powershell
+$env:NATIVE_CONTRACT_CLAUDE_EXE = (Get-Command claude.exe -CommandType Application | Select-Object -First 1).Source
+npm.cmd --prefix bridge run test:native:2.1.319
+```
+
+Test vyžaduje oficiální Windows x64
+executable s výše uvedeným SHA256, používá pouze vlastní syntetické profily
+a loopback/deny transport. Neověřuje přihlášení, entitlement ani postižený živý
+profil a nespouští úlohu přes alternativního poskytovatele.
+
 `CLAUDE_AUTH_FAILED` (například native 401) po zahájení úlohy už není totéž co
 preflight chyba. Neprováděj automatický login/refresh ani znovuodeslání. Nejprve
 stav a dopady, přihlášení/přístup k modelu řeš zvlášť. MCP timeout rodiče nastav

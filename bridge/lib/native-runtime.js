@@ -21,6 +21,10 @@ const MODEL_CATALOG = Object.freeze({ opus: 'claude-opus-5[1m]', 'opus[1m]': 'cl
 const FLAGS = Object.freeze(['--model', '--settings', '--strict-mcp-config', '--mcp-config', '--print', '--input-format', '--output-format']);
 const REMOTE_PERSONAL = 'Managed settings (remote): not fetched — requires an Enterprise or Team subscription';
 const ORG_PERSONAL = 'Organization policy: not applicable to Pro and Max accounts';
+// Exact 2.1.319 doctor formatter for its prosumer_oauth policy ineligibility.
+// This diagnostic is characterized separately from the legacy wording; do not
+// infer that another release or an arbitrary successful policy status is safe.
+const ORG_PERSONAL_319 = 'Organization policy: not applicable to individual subscription plans';
 const LIMIT = 256 * 1024;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -628,8 +632,11 @@ function createRuntime(options, deps) {
         }
         const doctor = await execute(['doctor']);
         const lines = (doctor.stdout + '\n' + doctor.stderr).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').split(/\r?\n/).map(s => s.trim());
-        if (!lines.includes(REMOTE_PERSONAL) || !lines.includes(ORG_PERSONAL)
-            || lines.some(s => /settings.*(?:error|invalid|failed)|(?:error|invalid|failed).*settings/i.test(s))) throw error('NATIVE_POLICY');
+        const remote = lines.filter(s => s.startsWith('Managed settings (remote):'));
+        const organization = lines.filter(s => s.startsWith('Organization policy:'));
+        if (remote.length !== 1 || remote[0] !== REMOTE_PERSONAL || organization.length !== 1
+            || !(organization[0] === ORG_PERSONAL || version === '2.1.319' && organization[0] === ORG_PERSONAL_319)
+            || lines.some(s => /(?:settings|organization policy).*(?:error|invalid|failed|failure)|(?:error|invalid|failed|failure).*(?:settings|organization policy)/i.test(s))) throw error('NATIVE_POLICY');
       }
       await policy();
       launchLedger.revalidate();

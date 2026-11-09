@@ -6,6 +6,7 @@ const { isSupportedVersion } = require('../lib/native-version');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { synthetic, inference, assertWire, reply, refusal, SENTINEL } = require('./native-runtime-fixture');
 const reject = (...codes) => e => codes.includes(e.code) && !e.message.includes(SENTINEL);
 const timeout = { timeout: 120000 };
@@ -16,6 +17,25 @@ async function native(fn, options) {
 }
 function toolResults(f) {
   return inference(f).flatMap(r => r.body.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(x => x.type === 'tool_result');
+}
+const messagesHash = request => createHash('sha256').update(JSON.stringify(request.body.messages)).digest('hex');
+function assert319RefusalContinuation(requests) {
+  const [before, after] = requests.slice(-2).map(r => r.body.messages);
+  assert.equal(after.length, before.length + 2, 'exact 319 continuation adds one assistant refusal and one user message');
+  assert.deepEqual(after.slice(0, before.length).map(m => m.role), before.map(m => m.role));
+  assert.deepEqual(after.slice(-2).map(m => m.role), ['assistant', 'user']);
+  assert.deepEqual(after.at(-2).content, [{ type: 'text', text: 'Synthetic transport refusal.' }]);
+  assert.ok(Array.isArray(after.at(-1).content) && after.at(-1).content.length > 0
+    && after.at(-1).content.every(b => b.type === 'text' && typeof b.text === 'string' && b.text.length > 0));
+  assert.notEqual(messagesHash(requests.at(-2)), messagesHash(requests.at(-1)), 'continuation must not replay an identical request');
+}
+function assertRefusalWire(f, version, legacyCount) {
+  // Exact 2.1.319 performs one same-model continuation after a refusal. This
+  // characterization is not a generic retry allowance for other releases.
+  const count = legacyCount + (version === '2.1.319' ? 1 : 0);
+  assertWire(f, count); // Every request retains route, model, OAuth and no fallbacks.
+  if (version === '2.1.319') assert319RefusalContinuation(inference(f));
+  return count;
 }
 async function ordinary(f) {
   await f.json(path.relative(f.root, path.join(f.config, 'settings.json')), { model: 'opus[1m]', permissions: { deny: ['Read(./denied.txt)'] } });
@@ -129,10 +149,12 @@ test('native ordinary USER env/model/helper reload cannot displace saved OAuth; 
     return true;
   });
   const p = await f.runtime().preflight({ cwd: f.project });
-  const result = await p.launch(l => f.runPrepared(l));
+  let launches = 0;
+  const result = await p.launch(l => { launches++; return f.runPrepared(l); });
+  assert.equal(launches, 1, 'one prepared task launches one native child');
   assert.equal(result.code, 1);
   const value = JSON.parse(result.stdout); assert.equal(value.is_error, true); assert.equal(value.stop_reason, 'refusal');
-  assertWire(f, 2);
+  assertRefusalWire(f, p.identity.version, 2);
   assert.ok(toolResults(f).some(r => r.tool_use_id === 'runtime_witness' && r.is_error && JSON.stringify(r.content).includes('denied by your permission settings')));
   assert.ok(!JSON.stringify(inference(f)).includes('RUNTIME_WITNESS_MUST_NOT_LEAVE'));
   await assert.rejects(fs.stat(path.join(f.project, 'helper-ran')), e => e.code === 'ENOENT');
@@ -144,16 +166,32 @@ test('native refusal switching guard has a nonvacuous switching control', timeou
     refusal(res, r.body.model); return true;
   });
   const p = await f.runtime().preflight({ cwd: f.project });
-  const guarded = await p.launch(l => f.runPrepared(l));
-  assert.equal(guarded.code, 1); assert.equal(JSON.parse(guarded.stdout).stop_reason, 'refusal'); assertWire(f, 1);
+  let guardedLaunches = 0;
+  const guarded = await p.launch(l => { guardedLaunches++; return f.runPrepared(l); });
+  assert.equal(guardedLaunches, 1, 'native continuation must not be a second prepared launch');
+  assert.equal(guarded.code, 1); assert.equal(JSON.parse(guarded.stdout).stop_reason, 'refusal');
+  const guardedCount = assertRefusalWire(f, p.identity.version, 1);
   const controlPrepared = await f.runtime().preflight({ cwd: f.project });
+  let controlLaunches = 0;
   const control = await controlPrepared.launch(l => {
+    controlLaunches++;
     const args = [...l.args]; const index = args.indexOf('--settings') + 1;
     const settings = JSON.parse(args[index]); settings.switchModelsOnFlag = true; args[index] = JSON.stringify(settings);
     return f.runPrepared({ ...l, args });
   });
+  assert.equal(controlLaunches, 1);
   assert.equal(control.code, 0);
-  assert.deepEqual(inference(f).slice(1).map(r => r.body.model), ['claude-opus-5', 'claude-opus-4-8']);
+  const switching = inference(f).slice(guardedCount);
+  assert.deepEqual(switching.map(r => r.body.model), p.identity.version === '2.1.319'
+    ? ['claude-opus-5', 'claude-opus-5', 'claude-opus-4-8'] : ['claude-opus-5', 'claude-opus-4-8']);
+  for (const r of switching) {
+    assert.equal(r.url, '/v1/messages?beta=true'); assert.equal(r.syntheticOAuth, true); assert.equal(r.syntheticKey, false);
+    assert.ok(r.body.fallbacks === undefined || Array.isArray(r.body.fallbacks) && r.body.fallbacks.length === 0);
+  }
+  if (p.identity.version === '2.1.319') {
+    assert319RefusalContinuation(switching.slice(0, 2));
+    assert.equal(messagesHash(switching[2]), messagesHash(switching[1]), 'intentional control switches model on the same continued messages');
+  }
 }));
 
 function contamination(f, mixed = false) {

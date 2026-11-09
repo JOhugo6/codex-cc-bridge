@@ -156,6 +156,11 @@ Native konflikty obsahují povolený statický `reason` a případně kategorii
 `last_error` existující konverzace a `doctor --native`.
 [Význam důvodů a postup při issue #1](docs/runbook.md#native-chyby-před-spuštěním).
 
+[Provozní issue #2](docs/runbook.md#issue-2-provozní-kompatibilita-21319) zůstává
+samostatně otevřené: přesný build 2.1.319 má doložené dílčí opravy a bezpečný
+úklid neúčinné settings env položky, ale neznámé policy omezení dál odmítá.
+Testy na jiném profilu neprokazují funkčnost původní postižené instalace.
+
 `npm test` explicitně zahrnuje všechny udržované offline suites včetně nativní
 charakterizace/integrace a instalátoru, bez shell globů a živého smoke.
 `test:unit`, `test:native`, `test:installer` jsou dílčí skupiny. Chybějící native/
