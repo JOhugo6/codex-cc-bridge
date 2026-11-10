@@ -103,7 +103,7 @@ test('Team rejects incomplete, failed, contradictory and unattested metadata wit
   }
 });
 
-test('Team requires both validated caches and refuses managed routing, helpers, host policy and unknown restrictions', async t => {
+test('Team requires both validated caches and refuses managed routing, helpers, host policy and malformed restrictions', async t => {
   const f = await teamFixture(); t.after(() => f.close());
   for (const name of ['remote-settings.json', 'policy-limits.json']) {
     const filename = path.join(f.config, name), bytes = await fs.readFile(filename);
@@ -117,7 +117,7 @@ test('Team requires both validated caches and refuses managed routing, helpers, 
     await assert.rejects(f.runtime().preflight({ cwd: f.project }), rejects('NATIVE_CONFLICT'));
   }
   await f.json('config/remote-settings.json', REMOTE);
-  await f.json('config/policy-limits.json', { ...POLICY, restrictions: { unknown: { allowed: true } } });
+  await f.json('config/policy-limits.json', { ...POLICY, restrictions: { unknown: { allowed: 'true' } } });
   await assert.rejects(f.runtime().preflight({ cwd: f.project }), rejects('NATIVE_CONFLICT'));
   await f.json('config/policy-limits.json', POLICY);
   await assert.rejects(f.runtime({ parentEnv: { ...f.parentEnv, CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1' } }).preflight({ cwd: f.project }), rejects('NATIVE_CONFLICT'));

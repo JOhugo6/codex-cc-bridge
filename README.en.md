@@ -159,10 +159,12 @@ category, for example `SETTINGS_PROHIBITED_ENV` versus
 `last_error`, and `doctor --native` preserve the same diagnostics.
 [Reason meanings and issue #1 handling](docs/runbook.md#native-chyby-před-spuštěním).
 
-[Operational issue #2](docs/runbook.md#issue-2-provozní-kompatibilita-21319) remains
-open: exact-build 2.1.319 has verified partial fixes and a safe cleanup for the
-ineffective settings env entry, while the unknown policy restriction remains
-refused. Tests on another profile do not establish affected-profile success.
+[The 2.1.319 contract for issue #2](docs/runbook.md#issue-2-provozní-kompatibilita-21319)
+accepts native string-keyed restrictions with a sole boolean `allowed`, preserves
+every value and native enforcement, and refuses malformed/unsupported shapes.
+The specifically native-ignored settings env entry may remain unchanged; the
+launch-environment control stays prohibited. Operational verification requires
+an actual `claude_turn` on the intended profile; synthetic tests do not replace it.
 
 `npm test` explicitly enumerates every maintained offline suite, including native
 characterization/integration and installer tests; no shell globs or live smoke.

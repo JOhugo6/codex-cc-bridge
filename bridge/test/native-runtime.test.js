@@ -318,7 +318,7 @@ test('personal feature caches are validated, preserved and included in source dr
   }
   await f.json('config/remote-settings.json', remote);
   for (const bad of [{ ...policy, compliance_taints: [SENTINEL] }, { ...policy, monitoring_notice: SENTINEL },
-    { ...policy, restrictions: { unknown: { allowed: true } } }, { ...policy, defaults: { remote_control_at_startup: true } },
+    { ...policy, restrictions: { unknown: { allowed: 'true' } } }, { ...policy, defaults: { remote_control_at_startup: true } },
     { ...policy, env: { ANTHROPIC_AUTH_TOKEN: SENTINEL } }, { ...policy, restrictions: { allow_quick_web_setup: { allowed: false, helper: SENTINEL } } }]) {
     await f.json('config/policy-limits.json', bad);
     await assert.rejects(f.runtime().preflight({ cwd: f.project }), rejection('NATIVE_CONFLICT'));

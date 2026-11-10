@@ -77,7 +77,7 @@ async function connectMcp(f, runtime = createRuntime(f)) {
   return client;
 }
 
-test('reported settings and unknown personal restriction have distinct private-safe diagnostics', () => {
+test('strict pure validators keep private-safe diagnostics without a verified native version', () => {
   const api = internals();
   for (const value of ['', '0', '1', SENTINEL]) {
     assert.throws(() => validateSettings({ env: { [SKIP_PERMISSIONS.toLowerCase()]: value } }),
@@ -151,8 +151,8 @@ test('policy and remote cache schema remain fail closed without leaking keys or 
 
 test('file and registry settings parsing preserves static source categories', async () => {
   const cases = [
-    ['config/settings.json', { env: { [SKIP_PERMISSIONS]: SENTINEL } }, 'SETTINGS_PROHIBITED_ENV', 'USER_SETTINGS'],
-    ['project/.claude/settings.local.json', { env: { [SKIP_PERMISSIONS]: SENTINEL } }, 'SETTINGS_PROHIBITED_ENV', 'PROJECT_SETTINGS'],
+    ['config/settings.json', { env: { [SKIP_PERMISSIONS + '_UNSUPPORTED']: SENTINEL } }, 'SETTINGS_PROHIBITED_ENV', 'USER_SETTINGS'],
+    ['project/.claude/settings.local.json', { env: { [SKIP_PERMISSIONS + '_UNSUPPORTED']: SENTINEL } }, 'SETTINGS_PROHIBITED_ENV', 'PROJECT_SETTINGS'],
     ['Program Files/ClaudeCode/managed-settings.json', { [SENTINEL]: SENTINEL }, 'SETTINGS_UNSUPPORTED_FIELD', 'MANAGED_SETTINGS'],
     ['Program Files/ClaudeCode/managed-settings.d/test.json', { [SENTINEL]: SENTINEL }, 'SETTINGS_UNSUPPORTED_FIELD', 'MANAGED_SETTINGS'],
     ['config/remote-settings.json', { [SENTINEL]: SENTINEL }, 'SETTINGS_UNSUPPORTED_FIELD', 'REMOTE_SETTINGS_CACHE'],
@@ -194,10 +194,10 @@ test('MCP independently reports both failures and leaves failed first preflight 
   try {
     const call = () => client.callTool({ name: 'claude_turn', arguments: { conversation_id: 'new-conflict',
       request_id: 'new-request', message: 'synthetic preflight only', working_dir: f.project } });
-    await f.json('config/policy-limits.json', baseline({ [COBALT]: { allowed: false } }));
+    await f.json('config/policy-limits.json', baseline({ [COBALT]: { allowed: false, unsupported: true } }));
     let response = await call(); assert.equal(response.isError, true);
     conflict('POLICY_CACHE_RESTRICTION', 'POLICY_CACHE', [f.root])(JSON.parse(response.content[0].text));
-    await f.json('config/settings.json', { env: { [SKIP_PERMISSIONS]: SENTINEL } });
+    await f.json('config/settings.json', { env: { [SKIP_PERMISSIONS + '_UNSUPPORTED']: SENTINEL } });
     response = await call(); assert.equal(response.isError, true);
     conflict('POLICY_CACHE_RESTRICTION', 'POLICY_CACHE', [f.root])(JSON.parse(response.content[0].text));
     // Repair only the synthetic cache. The independent settings failure remains.
@@ -215,8 +215,8 @@ test('MCP independently reports both failures and leaves failed first preflight 
 test('existing ready conversation persists only safe conflict diagnostics across MCP restart', async () => withFixture(async f => {
   const { bridge, state } = await seedReady(f);
   for (const [cache, userSettings, reason, source] of [
-    [baseline({ [COBALT]: { allowed: false } }), {}, 'POLICY_CACHE_RESTRICTION', 'POLICY_CACHE'],
-    [baseline({ allow_connector_file_downloads: { allowed: true } }), { env: { [SKIP_PERMISSIONS]: SENTINEL } }, 'SETTINGS_PROHIBITED_ENV', 'USER_SETTINGS'],
+    [baseline({ [COBALT]: { allowed: false, unsupported: true } }), {}, 'POLICY_CACHE_RESTRICTION', 'POLICY_CACHE'],
+    [baseline({ allow_connector_file_downloads: { allowed: true } }), { env: { [SKIP_PERMISSIONS + '_UNSUPPORTED']: SENTINEL } }, 'SETTINGS_PROHIBITED_ENV', 'USER_SETTINGS'],
   ]) {
     await f.json('config/policy-limits.json', cache); await f.json('config/settings.json', userSettings);
     let client = await connectMcp(f);
@@ -256,8 +256,8 @@ test('existing ready conversation persists only safe conflict diagnostics across
 test('doctor native preflight reports the same safe reason and source for real synthetic validators', async () => withFixture(async f => {
   const doctor = privateModule('../doctor.js', '', { './lib/native-runtime': { ...f.api, createNativeRuntime: createRuntime(f) } });
   for (const [cache, userSettings, reason, source] of [
-    [baseline({ [COBALT]: { allowed: false } }), {}, 'POLICY_CACHE_RESTRICTION', 'POLICY_CACHE'],
-    [baseline(), { env: { [SKIP_PERMISSIONS]: SENTINEL } }, 'SETTINGS_PROHIBITED_ENV', 'USER_SETTINGS'],
+    [baseline({ [COBALT]: { allowed: false, unsupported: true } }), {}, 'POLICY_CACHE_RESTRICTION', 'POLICY_CACHE'],
+    [baseline(), { env: { [SKIP_PERMISSIONS + '_UNSUPPORTED']: SENTINEL } }, 'SETTINGS_PROHIBITED_ENV', 'USER_SETTINGS'],
   ]) {
     await f.json('config/policy-limits.json', cache); await f.json('config/settings.json', userSettings);
     const result = await capture(() => doctor.main(['--native', '--cwd', f.project], {

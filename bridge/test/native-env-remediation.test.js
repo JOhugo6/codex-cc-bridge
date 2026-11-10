@@ -17,7 +17,7 @@ const conflict = (reason, source) => err => {
   return true;
 };
 
-test('one-entry settings cleanup preserves other settings and both policy boolean values', async t => {
+test('legacy native schema still requires manual settings cleanup and preserves policy booleans', async t => {
   for (const allowed of [false, true]) {
     const f = await synthetic(); t.after(() => f.close());
     const original = { theme: 'dark', permissions: { deny: ['Read(./private.txt)'], ask: ['Bash(git push *)'] },
@@ -27,7 +27,7 @@ test('one-entry settings cleanup preserves other settings and both policy boolea
     const policyFile = path.join(f.config, 'policy-limits.json');
     const policyBytes = await fs.readFile(policyFile);
     await assert.rejects(f.runtime().preflight({ cwd: f.project }), conflict('SETTINGS_PROHIBITED_ENV', 'USER_SETTINGS'));
-    assert.equal(f.calls.length, 0);
+    assert.deepEqual(f.calls, [{ kind: 'version' }], 'legacy refusal follows only the guarded version probe');
     // This is the documented operator action on a synthetic file, not an
     // automatic migration or a production validator exception.
     const cleaned = structuredClone(original); delete cleaned.env[KEY];
@@ -42,19 +42,19 @@ test('one-entry settings cleanup preserves other settings and both policy boolea
   }
 });
 
-test('settings cleanup does not admit unknown policy, replacement controls or malformed env', async t => {
+test('settings cleanup does not admit malformed policy, replacement controls or malformed env', async t => {
   const f = await synthetic(); t.after(() => f.close());
   const original = { env: { [KEY]: '1' } };
   await f.json('config/settings.json', original);
   const cleaned = structuredClone(original); delete cleaned.env[KEY];
   await f.json('config/settings.json', cleaned);
   for (const allowed of [false, true]) {
-    const unknown = policy(false); unknown.restrictions.allow_cobalt_plinth_alkanet = { allowed };
-    await f.json('config/policy-limits.json', unknown);
+    const malformed = policy(false); malformed.restrictions.allow_cobalt_plinth_alkanet = { allowed, unsupported: true };
+    await f.json('config/policy-limits.json', malformed);
     await assert.rejects(f.runtime().preflight({ cwd: f.project }), conflict('POLICY_CACHE_RESTRICTION', 'POLICY_CACHE'));
   }
   await f.json('config/policy-limits.json', policy(false));
-  for (const env of [{ [KEY + '_TYPO']: '1' }, { [KEY.toLowerCase()]: '1' }]) {
+  for (const env of [{ [KEY + '_TYPO']: '1' }, { CLAUDE_CODE_NEW_CONTROL: '1' }]) {
     await f.json('config/settings.json', { env });
     await assert.rejects(f.runtime().preflight({ cwd: f.project }), conflict('SETTINGS_PROHIBITED_ENV', 'USER_SETTINGS'));
   }

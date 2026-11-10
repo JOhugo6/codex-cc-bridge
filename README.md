@@ -156,10 +156,12 @@ Native konflikty obsahují povolený statický `reason` a případně kategorii
 `last_error` existující konverzace a `doctor --native`.
 [Význam důvodů a postup při issue #1](docs/runbook.md#native-chyby-před-spuštěním).
 
-[Provozní issue #2](docs/runbook.md#issue-2-provozní-kompatibilita-21319) zůstává
-samostatně otevřené: přesný build 2.1.319 má doložené dílčí opravy a bezpečný
-úklid neúčinné settings env položky, ale neznámé policy omezení dál odmítá.
-Testy na jiném profilu neprokazují funkčnost původní postižené instalace.
+[Kontrakt 2.1.319 pro issue #2](docs/runbook.md#issue-2-provozní-kompatibilita-21319)
+přijímá nativní mapu řetězcových restrikcí s jediným booleovským `allowed`,
+zachovává všechny hodnoty i nativní enforcement a odmítá vadné/nepodporované
+tvary. Konkrétní nativně ignorovaná settings env položka může zůstat beze změny;
+ve spouštěcím prostředí se dál odmítá. Provozní ověření vyžaduje skutečný
+`claude_turn` na zamýšleném profilu; syntetické testy jej nenahrazují.
 
 `npm test` explicitně zahrnuje všechny udržované offline suites včetně nativní
 charakterizace/integrace a instalátoru, bez shell globů a živého smoke.

@@ -25,6 +25,13 @@ const ORG_PERSONAL = 'Organization policy: not applicable to Pro and Max account
 // This diagnostic is characterized separately from the legacy wording; do not
 // infer that another release or an arbitrary successful policy status is safe.
 const ORG_PERSONAL_319 = 'Organization policy: not applicable to individual subscription plans';
+// Private schema capabilities. The pending capability admits only the same
+// bounded data shape for a guarded --version probe; it never authorizes a task.
+// Public/pure validators always retain the conservative legacy contract.
+const VERSION_PROBE_SCHEMA = Symbol('version-probe-schema');
+const NATIVE_319_SCHEMA = Symbol('native-2.1.319-schema');
+const IGNORED_SETTINGS_ENV_319 = 'CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS';
+const expandedSchema = schema => schema === VERSION_PROBE_SCHEMA || schema === NATIVE_319_SCHEMA;
 const LIMIT = 256 * 1024;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -131,12 +138,25 @@ const MANAGED_FIELDS = new Set(`$schema permissions sandbox disableAllHooks allo
 const PERMISSION_FIELDS = new Set(`allow deny ask defaultMode additionalDirectories disableBypassPermissionsMode
   blockReadsOutsideWorkingDirectories`.split(/\s+/));
 
-function validateSettings(value, { managed = false, source = managed ? 'MANAGED_SETTINGS' : 'SETTINGS' } = {}) {
+function validateSettings(value, options) { return validateSettingsForSchema(value, options); }
+
+function validateSettingsForSchema(value, { managed = false, source = managed ? 'MANAGED_SETTINGS' : 'SETTINGS' } = {}, schema) {
   if (!object(value)) throw error('NATIVE_SOURCE');
   for (const [key, val] of Object.entries(value)) {
-    if (!(managed ? MANAGED_FIELDS : ORDINARY_FIELDS).has(key)) throw error('NATIVE_CONFLICT', 'SETTINGS_UNSUPPORTED_FIELD', source);
+    // Exact 2.1.319 ordinary boolean schema. This is a saved workflow usage-
+    // consent preference; native's reader and noninteractive prompt behavior
+    // remain authoritative. Do not broaden managed policy or force its value.
+    const workflowWarning319 = !managed && expandedSchema(schema) && key === 'skipWorkflowUsageWarning';
+    if (!(managed ? MANAGED_FIELDS : ORDINARY_FIELDS).has(key) && !workflowWarning319) throw error('NATIVE_CONFLICT', 'SETTINGS_UNSUPPORTED_FIELD', source);
+    if (workflowWarning319 && typeof val !== 'boolean') throw error('NATIVE_SOURCE');
     if (key === 'env') {
-      for (const name of Object.keys(envEntries(val))) if (prohibitedEnv(name)) throw error('NATIVE_CONFLICT', 'SETTINGS_PROHIBITED_ENV', source);
+      for (const name of Object.keys(envEntries(val))) {
+        // This exact name is discarded by 2.1.319's settings-env reader, before
+        // environment application. Preserve its source bytes; never put it in
+        // SAFE_NATIVE_ENV, process pins, or an outgoing process environment.
+        if (expandedSchema(schema) && name === IGNORED_SETTINGS_ENV_319) continue;
+        if (prohibitedEnv(name)) throw error('NATIVE_CONFLICT', 'SETTINGS_PROHIBITED_ENV', source);
+      }
     }
     if (key === 'apiKeyHelper' && val !== '') throw error('NATIVE_CONFLICT', 'SETTINGS_AUTH_HELPER', source);
     if (key === 'fallbackModel' && (!Array.isArray(val) || val.length)) throw error('NATIVE_CONFLICT', 'SETTINGS_MODEL_ROUTING', source);
@@ -183,12 +203,12 @@ function validateSettings(value, { managed = false, source = managed ? 'MANAGED_
 // Personal accounts also cache feature availability. Presence alone does not mean
 // organization policy. Admit only understood data, preserve it for native to enforce,
 // and still require native doctor to establish personal-account eligibility.
-function validatePersonalCache(value, kind) {
+function validatePersonalCache(value, kind, schema) {
   if (!object(value)) throw error('NATIVE_SOURCE');
   if (kind === 'remote-settings.json') {
     const { channelsEnabled, ...managed } = value;
     if (channelsEnabled !== undefined && typeof channelsEnabled !== 'boolean') throw error('NATIVE_CONFLICT', 'REMOTE_SETTINGS_CACHE_SCHEMA', 'REMOTE_SETTINGS_CACHE');
-    validateSettings(managed, { managed: true, source: 'REMOTE_SETTINGS_CACHE' });
+    validateSettingsForSchema(managed, { managed: true, source: 'REMOTE_SETTINGS_CACHE' }, schema);
     if (!Object.keys(value).length) throw error('NATIVE_CONFLICT', 'REMOTE_SETTINGS_CACHE_SCHEMA', 'REMOTE_SETTINGS_CACHE');
     return;
   }
@@ -197,26 +217,31 @@ function validatePersonalCache(value, kind) {
       || !Array.isArray(value.compliance_taints) || value.compliance_taints.length
       || value.monitoring_notice !== null) throw error('NATIVE_CONFLICT', 'POLICY_CACHE_SCHEMA', 'POLICY_CACHE');
   for (const [key, restriction] of Object.entries(value.restrictions)) {
-    // Native 2.1.319 declares this connector download restriction and checks it
-    // before downloads. Preserve both allowed/denied values for native to enforce.
-    if (!['allow_quick_web_setup', 'enforce_web_search_mcp_isolation', 'allow_connector_file_downloads'].includes(key)
-        || !object(restriction) || Object.keys(restriction).length !== 1
-        || typeof restriction.allowed !== 'boolean') throw error('NATIVE_CONFLICT', 'POLICY_CACHE_RESTRICTION', 'POLICY_CACHE');
+    // 2.1.319 explicitly accepts a string-keyed restriction record; its reader
+    // looks up the exact key and returns the saved boolean. A static feature-name
+    // list is not that schema. Leave every record for native to enforce unchanged.
+    // Earlier/unverified versions retain the established named subset.
+    // Native's record parser omits __proto__; admitting that key would silently
+    // discard a restriction. Other ordinary/prototype-looking names round-trip.
+    if (key === '__proto__'
+        || (!expandedSchema(schema) && !['allow_quick_web_setup', 'enforce_web_search_mcp_isolation', 'allow_connector_file_downloads'].includes(key))
+        || !object(restriction) || Reflect.ownKeys(restriction).length !== 1
+        || !Object.hasOwn(restriction, 'allowed') || typeof restriction.allowed !== 'boolean') throw error('NATIVE_CONFLICT', 'POLICY_CACHE_RESTRICTION', 'POLICY_CACHE');
   }
   if (Object.keys(value.defaults).some(k => k !== 'remote_control_at_startup')
       || (value.defaults.remote_control_at_startup !== undefined && value.defaults.remote_control_at_startup !== false)) throw error('NATIVE_CONFLICT', 'POLICY_CACHE_SCHEMA', 'POLICY_CACHE');
 }
 
-function parseSettings(text, managed, mcp = false, cache, source) {
+function parseSettings(text, managed, mcp = false, cache, source, schema) {
   try {
     if (Buffer.byteLength(text) > LIMIT) throw error('NATIVE_SOURCE');
     const value = JSON.parse(text.replace(/^\uFEFF/, ''));
-    if (cache) { validatePersonalCache(value, cache); return; }
+    if (cache) { validatePersonalCache(value, cache, schema); return; }
     if (mcp) {
       if (!object(value) || !object(value.mcpServers) || Object.keys(value).some(k => k !== 'mcpServers')) throw error('NATIVE_SOURCE');
       return;
     }
-    validateSettings(value, { managed, source });
+    validateSettingsForSchema(value, { managed, source }, schema);
   } catch (e) { throw e.code === 'NATIVE_CONFLICT' ? safeError(e) : error('NATIVE_SOURCE'); }
 }
 
@@ -370,7 +395,7 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     if (s.size > LIMIT) throw error('NATIVE_SOURCE');
     let text;
     try { text = await deps.fs.readFile(file, 'utf8'); } catch { throw error('NATIVE_SOURCE'); }
-    parseSettings(text, managed, mcp, cache, source);
+    parseSettings(text, managed, mcp, cache, source, context.sourceSchema);
     const after = await stat(file, nativeTouch);
     const sourceStamp = nativeTouch ? cacheStamp : statStamp;
     if (!after || sourceStamp(s) !== sourceStamp(after)) throw error('NATIVE_DRIFT', sourceDriftReason(file));
@@ -433,7 +458,8 @@ async function inspectSources(context, deps, { includeGlobal = true, ledger = cr
     if (!expected.delete(id) || typeof row.present !== 'boolean') throw error('NATIVE_SOURCE');
     if (row.present) {
       if (!['String', 'ExpandString'].includes(row.kind) || typeof row.raw !== 'string' || typeof row.value !== 'string') throw error('NATIVE_SOURCE');
-      parseSettings(row.raw, true, false, undefined, 'MANAGED_REGISTRY'); parseSettings(row.value, true, false, undefined, 'MANAGED_REGISTRY');
+      parseSettings(row.raw, true, false, undefined, 'MANAGED_REGISTRY', context.sourceSchema);
+      parseSettings(row.value, true, false, undefined, 'MANAGED_REGISTRY', context.sourceSchema);
     }
     entries.push([id, row.present ? hash(JSON.stringify([row.kind, row.raw, row.value])) : 'absent']);
   }
@@ -599,11 +625,20 @@ function createRuntime(options, deps) {
           return r;
         } catch { throw error('NATIVE_DIAGNOSTIC'); }
       };
-      // Baseline protected global fields BEFORE any native metadata can mutate them.
+      // Baseline every protected source BEFORE any native metadata can mutate it.
+      // This provisional structural validation can authorize ONLY --version with
+      // the non-inference hooks/MCP/auth/routing guards above. Malformed records,
+      // active policy states and all other unsupported inputs still fail here.
+      context.sourceSchema = VERSION_PROBE_SCHEMA;
       const launchLedger = createSourceLedger(deps);
       const launchSources = await inspectSources(context, deps, { ledger: launchLedger });
       const version = parseVersionOutput((await execute(['--version'])).stdout);
       if (!version) throw error('NATIVE_COMPATIBILITY');
+      context.sourceSchema = version === '2.1.319' ? NATIVE_319_SCHEMA : undefined;
+      launchLedger.revalidate();
+      // Complete version-aware validation before help, auth, doctor or any task.
+      // Reuse the original ledger; the version probe cannot establish new bytes.
+      if (await inspectSources(context, deps, { ledger: launchLedger }) !== launchSources) throw error('NATIVE_DRIFT');
       const help = await execute(['--help']);
       const flags = new Set(help.stdout.split(/\s+/));
       if (!FLAGS.every(f => flags.has(f))) throw error('NATIVE_COMPATIBILITY');

@@ -622,7 +622,10 @@ for (const defaultRoot of [false, true]) test(`actual native two-turn MCP/backen
     assert.equal(one.turn, 1); assert.equal(one.model, MODEL);
     assert.equal(one.runtime.contract, RUNTIME_CONTRACT);
     assert.equal(one.runtime.configRootMode, defaultRoot ? 'default' : 'explicit');
-    assert.deepEqual(one.model_evidence, [MODEL]);
+    // Exact 2.1.319 reports the base ID in structured usage for a pinned [1m]
+    // launch. The saved runtime/model selector and every wire request stay exact.
+    // Earlier contracts retain their previously characterized usage form.
+    assert.deepEqual(one.model_evidence, [one.runtime.version === '2.1.319' ? MODEL.replace('[1m]', '') : MODEL]);
     assertWire(f, 2);
     const wire = JSON.stringify(inference(f));
     assert.ok(wire.includes('INTEGRATION_PROJECT_CONTEXT')); assert.ok(wire.includes('INTEGRATION_USER_CONTEXT'));
