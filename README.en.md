@@ -159,7 +159,7 @@ category, for example `SETTINGS_PROHIBITED_ENV` versus
 `last_error`, and `doctor --native` preserve the same diagnostics.
 [Reason meanings and issue #1 handling](docs/runbook.md#native-chyby-před-spuštěním).
 
-[The 2.1.319 contract for issue #2](docs/runbook.md#issue-2-provozní-kompatibilita-21319)
+[The verified 2.1.319 and 2.1.322 contract](docs/runbook.md#issue-2-ověřené-buildy-21319-a-21322)
 accepts native string-keyed restrictions with a sole boolean `allowed`, preserves
 every value and native enforcement, and refuses malformed/unsupported shapes.
 The specifically native-ignored settings env entry may remain unchanged; the

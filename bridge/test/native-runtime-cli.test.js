@@ -19,9 +19,10 @@ function toolResults(f) {
   return inference(f).flatMap(r => r.body.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(x => x.type === 'tool_result');
 }
 const messagesHash = request => createHash('sha256').update(JSON.stringify(request.body.messages)).digest('hex');
-function assert319RefusalContinuation(requests) {
+const hasRefusalContinuation = version => version === '2.1.319' || version === '2.1.322';
+function assertRefusalContinuation(requests) {
   const [before, after] = requests.slice(-2).map(r => r.body.messages);
-  assert.equal(after.length, before.length + 2, 'exact 319 continuation adds one assistant refusal and one user message');
+  assert.equal(after.length, before.length + 2, 'characterized continuation adds one assistant refusal and one user message');
   assert.deepEqual(after.slice(0, before.length).map(m => m.role), before.map(m => m.role));
   assert.deepEqual(after.slice(-2).map(m => m.role), ['assistant', 'user']);
   assert.deepEqual(after.at(-2).content, [{ type: 'text', text: 'Synthetic transport refusal.' }]);
@@ -30,11 +31,11 @@ function assert319RefusalContinuation(requests) {
   assert.notEqual(messagesHash(requests.at(-2)), messagesHash(requests.at(-1)), 'continuation must not replay an identical request');
 }
 function assertRefusalWire(f, version, legacyCount) {
-  // Exact 2.1.319 performs one same-model continuation after a refusal. This
+  // Exact 2.1.319/2.1.322 perform one same-model continuation after a refusal. This
   // characterization is not a generic retry allowance for other releases.
-  const count = legacyCount + (version === '2.1.319' ? 1 : 0);
+  const count = legacyCount + (hasRefusalContinuation(version) ? 1 : 0);
   assertWire(f, count); // Every request retains route, model, OAuth and no fallbacks.
-  if (version === '2.1.319') assert319RefusalContinuation(inference(f));
+  if (hasRefusalContinuation(version)) assertRefusalContinuation(inference(f));
   return count;
 }
 async function ordinary(f) {
@@ -182,14 +183,14 @@ test('native refusal switching guard has a nonvacuous switching control', timeou
   assert.equal(controlLaunches, 1);
   assert.equal(control.code, 0);
   const switching = inference(f).slice(guardedCount);
-  assert.deepEqual(switching.map(r => r.body.model), p.identity.version === '2.1.319'
+  assert.deepEqual(switching.map(r => r.body.model), hasRefusalContinuation(p.identity.version)
     ? ['claude-opus-5', 'claude-opus-5', 'claude-opus-4-8'] : ['claude-opus-5', 'claude-opus-4-8']);
   for (const r of switching) {
     assert.equal(r.url, '/v1/messages?beta=true'); assert.equal(r.syntheticOAuth, true); assert.equal(r.syntheticKey, false);
     assert.ok(r.body.fallbacks === undefined || Array.isArray(r.body.fallbacks) && r.body.fallbacks.length === 0);
   }
-  if (p.identity.version === '2.1.319') {
-    assert319RefusalContinuation(switching.slice(0, 2));
+  if (hasRefusalContinuation(p.identity.version)) {
+    assertRefusalContinuation(switching.slice(0, 2));
     assert.equal(messagesHash(switching[2]), messagesHash(switching[1]), 'intentional control switches model on the same continued messages');
   }
 }));

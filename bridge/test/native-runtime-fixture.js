@@ -8,6 +8,7 @@ const syncFs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const Module = require('node:module');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { fixture, reply, SYNTHETIC_OAUTH } = require('./native-contract-fixture');
 const SENTINEL = 'native-runtime-synthetic-secret-never-real';
@@ -71,6 +72,15 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
   for (const p of [config, project, appdata, path.join(root, 'localappdata')]) await fs.mkdir(p, { recursive: true });
   const executable = native ? nativeExecutable() : path.join(root, 'claude.exe');
   if (!native) await fs.writeFile(executable, 'synthetic-native-executable');
+  // Fixture setup must not execute metadata (including executable-discovery
+  // unit controls). Only the exact characterized artifact selects marker 15.
+  let migrationVersion = 14;
+  if (native) {
+    try {
+      const digest = crypto.createHash('sha256').update(await fs.readFile(executable)).digest('hex');
+      if (digest === '345996b4bdbae21d817f750fae2f34cbf8d81224a5444c78136091d121beb298') migrationVersion = 15;
+    } catch (error) { if (error.code !== 'ENOENT') { await base.close(); throw error; } }
+  }
   const parentEnv = base ? { ...base.env } : {
     HOME: root, USERPROFILE: root, APPDATA: appdata, LOCALAPPDATA: path.join(root, 'localappdata'),
     SystemRoot: path.join(root, 'Windows'), Path: 'synthetic-unrelated-path',
@@ -154,8 +164,9 @@ async function synthetic({ native = false, defaultRoot = false, tier = 'max' } =
   await json(path.relative(root, globalFile), { hasCompletedOnboarding: true,
     // Saved-profile native tests begin after the current CLI's onboarding
     // migrations, without an inference warmup or a protected-drift exception.
+    // Exact 2.1.322 advances native's migration marker from 14 to 15.
     ...(native ? { opusProMigrationComplete: true, sonnet1m45MigrationComplete: true,
-      hasResetAutoModeOptInForDefaultOffer: true, migrationVersion: 14,
+      hasResetAutoModeOptInForDefaultOffer: true, migrationVersion,
       userID: 'synthetic-initialized-user', cachedExtraUsageDisabledReason: null } : {}),
     oauthAccount: { accountUuid: '11111111-1111-4111-8111-111111111111', emailAddress: EMAIL, organizationUuid: '22222222-2222-4222-8222-222222222222' },
     projects: { [project]: { hasTrustDialogAccepted: true }, [project.replaceAll('\\', '/')]: { hasTrustDialogAccepted: true } } });

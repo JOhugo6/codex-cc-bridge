@@ -70,7 +70,10 @@ for (const defaultRoot of [true, false]) for (const disableTools of [false, true
       const one = await connection.client.callTool({ name: 'claude_turn', arguments: input });
       assert.ok(!one.isError, JSON.stringify(one));
       assert.equal(one.structuredContent.model, 'claude-opus-5[1m]');
-      assert.deepEqual(one.structuredContent.model_evidence, ['claude-opus-5[1m]']);
+      // Both exact characterized builds report the base ID for this [1m] task.
+      const version = one.structuredContent.runtime.version;
+      assert.deepEqual(one.structuredContent.model_evidence,
+        [version === '2.1.319' || version === '2.1.322' ? 'claude-opus-5' : 'claude-opus-5[1m]']);
       assert.equal(one.structuredContent.runtime.configRootMode, defaultRoot ? 'default' : 'explicit');
       assertWire(f, 2);
       assert.deepEqual(await stamp(settings), original);

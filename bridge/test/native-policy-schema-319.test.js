@@ -18,7 +18,10 @@ const conflict = reason => err => {
   for (const value of [KEY, REPORTED, SENTINEL]) assert.ok(!JSON.stringify(err).includes(value));
   return true;
 };
-async function fixture(t, version = '2.1.319', options) {
+// Keep every positive/negative case scoped to the two characterized builds.
+for (const nativeVersion of ['2.1.319', '2.1.322']) {
+const nativeTest = (name, ...args) => test(`${nativeVersion}: ${name}`, ...args);
+async function fixture(t, version = nativeVersion, options) {
   const f = await synthetic(options); t.after(() => f.close());
   const execute = f.deps.execute;
   f.deps.execute = async (command, args, launch) => {
@@ -28,7 +31,7 @@ async function fixture(t, version = '2.1.319', options) {
   return f;
 }
 
-test('2.1.319 preserves generic restriction-map keys and both boolean values through preflight and launch', async t => {
+nativeTest('preserves generic restriction-map keys and both boolean values through preflight and launch', async t => {
   for (const allowed of [false, true]) {
     const f = await fixture(t);
     const restrictions = Object.fromEntries([REPORTED, 'allow_other_native_schema_key', 'enforce_other_native_schema_key',
@@ -44,7 +47,7 @@ test('2.1.319 preserves generic restriction-map keys and both boolean values thr
       assert.equal(args.some(arg => arg.includes('SYNTHETIC_TASK')), false);
     };
     const prepared = await f.runtime().preflight({ cwd: f.project });
-    assert.equal(prepared.identity.version, '2.1.319');
+    assert.equal(prepared.identity.version, nativeVersion);
     assert.equal(prepared.identity.model, 'claude-opus-5[1m]');
     await prepared.launch(launch => {
       assert.equal(launch.env.ANTHROPIC_BASE_URL, 'https://api.anthropic.com');
@@ -58,8 +61,8 @@ test('2.1.319 preserves generic restriction-map keys and both boolean values thr
   }
 });
 
-test('generic restrictions require the verified exact native version; pure validators remain strict', async t => {
-  for (const version of ['2.1.264', '2.1.318', '2.1.320', '3.0.0']) {
+nativeTest('generic restrictions require the verified exact native version; pure validators remain strict', async t => {
+  for (const version of ['2.1.264', '2.1.318', '2.1.320', '2.1.321', '2.1.323', '3.0.0']) {
     const f = await fixture(t, version);
     await f.json('config/policy-limits.json', policy({ [REPORTED]: { allowed: false } }));
     await assert.rejects(f.runtime().preflight({ cwd: f.project }), conflict('POLICY_CACHE_RESTRICTION'));
@@ -72,15 +75,15 @@ test('generic restrictions require the verified exact native version; pure valid
     assert.deepEqual(f.calls, [{ kind: 'version' }]);
   }
   const f = await fixture(t);
-  assert.throws(() => f.api.private.validatePersonalCache(policy({ [REPORTED]: { allowed: false } }), 'policy-limits.json', '2.1.319'),
+  assert.throws(() => f.api.private.validatePersonalCache(policy({ [REPORTED]: { allowed: false } }), 'policy-limits.json', nativeVersion),
     conflict('POLICY_CACHE_RESTRICTION'));
-  assert.throws(() => validateSettings({ env: { [KEY]: '1' } }, { nativeVersion: '2.1.319' }), conflict('SETTINGS_PROHIBITED_ENV'));
-  assert.throws(() => f.runtime({ nativeVersion: '2.1.319' }), { code: 'NATIVE_INPUT' });
-  await assert.rejects(f.runtime().preflight({ cwd: f.project, nativeVersion: '2.1.319' }), { code: 'NATIVE_INPUT' });
+  assert.throws(() => validateSettings({ env: { [KEY]: '1' } }, { nativeVersion }), conflict('SETTINGS_PROHIBITED_ENV'));
+  assert.throws(() => f.runtime({ nativeVersion }), { code: 'NATIVE_INPUT' });
+  await assert.rejects(f.runtime().preflight({ cwd: f.project, nativeVersion }), { code: 'NATIVE_INPUT' });
   assert.equal(f.calls.length, 0);
 });
 
-test('malformed restriction records and unsupported active/top-level policy states fail before the version probe', async t => {
+nativeTest('malformed restriction records and unsupported active/top-level policy states fail before the version probe', async t => {
   const f = await fixture(t);
   for (const restriction of [null, [], {}, true, false, 'false', 0,
     { allowed: null }, { allowed: 0 }, { allowed: 'false' }, { allowed: [] },
@@ -118,7 +121,7 @@ test('malformed restriction records and unsupported active/top-level policy stat
   }
 });
 
-test('only the native-ignored settings name is accepted on 2.1.319, with source bytes retained and no launch waiver', async t => {
+nativeTest('only the native-ignored settings name is accepted, with source bytes retained and no launch waiver', async t => {
   const f = await fixture(t);
   const file = path.join(f.config, 'settings.json');
   for (const name of [KEY, KEY.toLowerCase()]) for (const value of ['1', '0', '', 'synthetic']) {
@@ -133,7 +136,7 @@ test('only the native-ignored settings name is accepted on 2.1.319, with source 
     });
     assert.deepEqual(await fs.readFile(file), bytes);
   }
-  for (const version of ['2.1.264', '2.1.318', '2.1.320']) {
+  for (const version of ['2.1.264', '2.1.318', '2.1.320', '2.1.321', '2.1.323']) {
     const older = await fixture(t, version);
     await older.json('config/settings.json', { env: { [KEY]: '1' } });
     await assert.rejects(older.runtime().preflight({ cwd: older.project }), conflict('SETTINGS_PROHIBITED_ENV'));
@@ -160,7 +163,7 @@ test('only the native-ignored settings name is accepted on 2.1.319, with source 
   }
 });
 
-test('exact319 ordinary workflow-warning boolean is preserved without a forced setting or extra grant', async t => {
+nativeTest('ordinary workflow-warning boolean is preserved without a forced setting or extra grant', async t => {
   for (const relative of ['config/settings.json', 'config/settings.local.json',
     'project/.claude/settings.json', 'project/.claude/settings.local.json']) for (const value of [false, true]) {
     const f = await fixture(t);
@@ -183,14 +186,14 @@ test('exact319 ordinary workflow-warning boolean is preserved without a forced s
   }
 });
 
-test('workflow-warning support stays private, exact-version, ordinary-only and boolean-only', async t => {
+nativeTest('workflow-warning support stays private, exact-version, ordinary-only and boolean-only', async t => {
   for (const value of [null, 0, 1, '', 'false', 'true', [], {}]) {
     const f = await fixture(t);
     await f.json('config/settings.json', { skipWorkflowUsageWarning: value });
     await assert.rejects(f.runtime().preflight({ cwd: f.project }), { code: 'NATIVE_SOURCE' });
     assert.equal(f.calls.length, 0, 'invalid field types are refused before even the version probe');
   }
-  for (const version of ['2.1.264', '2.1.318', '2.1.320']) for (const value of [false, true]) {
+  for (const version of ['2.1.264', '2.1.318', '2.1.320', '2.1.321', '2.1.323']) for (const value of [false, true]) {
     const f = await fixture(t, version);
     await f.json('config/settings.json', { skipWorkflowUsageWarning: value });
     await assert.rejects(f.runtime().preflight({ cwd: f.project }), conflict('SETTINGS_UNSUPPORTED_FIELD'));
@@ -209,7 +212,7 @@ test('workflow-warning support stays private, exact-version, ordinary-only and b
   assert.equal(f.calls.length, 0);
   for (const value of [false, true]) {
     assert.throws(() => validateSettings({ skipWorkflowUsageWarning: value }), conflict('SETTINGS_UNSUPPORTED_FIELD'));
-    assert.throws(() => validateSettings({ skipWorkflowUsageWarning: value }, { nativeVersion: '2.1.319' }), conflict('SETTINGS_UNSUPPORTED_FIELD'));
+    assert.throws(() => validateSettings({ skipWorkflowUsageWarning: value }, { nativeVersion }), conflict('SETTINGS_UNSUPPORTED_FIELD'));
   }
   const unknown = await fixture(t);
   await unknown.json('config/settings.json', { skipWorkflowUsageWarnings: true });
@@ -217,7 +220,7 @@ test('workflow-warning support stays private, exact-version, ordinary-only and b
   assert.equal(unknown.calls.length, 0);
 });
 
-test('version-probe changes and post-preflight policy/settings edits cannot replace the original source baseline', async t => {
+nativeTest('version-probe changes and post-preflight policy/settings edits cannot replace the original source baseline', async t => {
   for (const phase of ['version', 'launch']) for (const source of ['policy-limits.json', 'settings.json']) {
     const f = await fixture(t);
     await f.json('config/policy-limits.json', policy({ [REPORTED]: { allowed: false } }));
@@ -236,8 +239,8 @@ test('version-probe changes and post-preflight policy/settings edits cannot repl
   }
 });
 
-test('Team 2.1.319 generic records still require complete native policy attestation and retain both caches', async t => {
-  const f = await fixture(t, '2.1.319', { tier: 'team' });
+nativeTest('Team generic records still require complete native policy attestation and retain both caches', async t => {
+  const f = await fixture(t, nativeVersion, { tier: 'team' });
   await f.json('config/policy-limits.json', policy({ [REPORTED]: { allowed: false }, require_synthetic: { allowed: true } }));
   await f.json('config/remote-settings.json', { channelsEnabled: true, permissions: { deny: ['Read(./private)'] } });
   const bytes = await fs.readFile(path.join(f.config, 'policy-limits.json'));
@@ -249,7 +252,7 @@ test('Team 2.1.319 generic records still require complete native policy attestat
   await assert.rejects(f.runtime().preflight({ cwd: f.project }), { code: 'NATIVE_POLICY' });
 });
 
-test('completed requests preserve identity in status and replay while unsupported continuation leaves historical state intact', async t => {
+nativeTest('completed requests preserve identity in status and replay while unsupported continuation leaves historical state intact', async t => {
   const f = await fixture(t);
   await f.json('config/policy-limits.json', policy({ [REPORTED]: { allowed: false } }));
   await f.json('config/settings.json', { env: { [KEY]: '1' } });
@@ -258,10 +261,10 @@ test('completed requests preserve identity in status and replay while unsupporte
   let runs = 0;
   const backend = { async run(input) { runs++; return { reply: 'synthetic policy schema result', session_id: input.sessionId }; } };
   const bridge = new ClaudeBridge(backend, settings, options => f.api.private.createRuntime(options, f.deps));
-  const request = { conversation_id: 'schema-319', request_id: 'completed', message: 'synthetic unit task', working_dir: f.project };
+  const request = { conversation_id: 'schema-' + nativeVersion, request_id: 'completed', message: 'synthetic unit task', working_dir: f.project };
   const output = await bridge.turn(request);
   assert.equal(runs, 1);
-  assert.equal(output.runtime.version, '2.1.319');
+  assert.equal(output.runtime.version, nativeVersion);
   const status = await bridge.status(request.conversation_id);
   assert.equal(status.status, 'ready'); assert.equal(status.turn, 1);
   assert.deepEqual(status.runtime, output.runtime); assert.deepEqual(status.last_result, output);
@@ -276,3 +279,4 @@ test('completed requests preserve identity in status and replay while unsupporte
   assert.deepEqual(after.last_result, output); assert.deepEqual(after.runtime, output.runtime);
   assert.equal(after.last_error.reason, 'POLICY_CACHE_RESTRICTION');
 });
+}

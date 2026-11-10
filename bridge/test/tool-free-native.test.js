@@ -155,7 +155,15 @@ test('actual bridge discovers and executes a native project MCP tool and Session
     const out = await connection.client.callTool({ name: 'claude_turn', arguments: {
       conversation_id: 'native-mcp', working_dir: f.project, message: 'OFFLINE_NATIVE_MCP_TASK' } });
     assert.ok(!out.isError, JSON.stringify(out)); assertWire(f, 2);
-    assert.ok(inference(f)[0].body.tools.some(t => t.name === 'mcp__offline_probe__probe'));
+    const first = inference(f)[0].body;
+    const version = out.structuredContent.runtime.version;
+    if (version === '2.1.319' || version === '2.1.322') {
+      // These exact builds list the discovered MCP tool in deferred context and
+      // offer ToolSearch. Both artifacts were characterized without changing
+      // settings or flags; actual tool execution below remains mandatory.
+      assert.ok(first.tools.some(t => t.name === 'ToolSearch'));
+      assert.ok(JSON.stringify({ system: first.system, messages: first.messages }).includes('mcp__offline_probe__probe'));
+    } else assert.ok(first.tools.some(t => t.name === 'mcp__offline_probe__probe'));
     assert.ok(results(inference(f)).some(r => r.tool_use_id === 'native_mcp_probe' && !r.is_error && JSON.stringify(r.content).includes('NATIVE_MCP_EXECUTION_CONFIRMED')));
     assert.equal(await fs.readFile(path.join(f.project, 'mcp-executed'), 'utf8'), 'ran');
     assert.equal(await fs.readFile(path.join(f.project, 'native-hook-executed'), 'utf8'), 'ran');

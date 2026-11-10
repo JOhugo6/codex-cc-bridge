@@ -13,15 +13,44 @@ const path = require('node:path');
 const { fixture, printArgs, reply, MODEL, SUPPORTED_VERSION, REQUIRED_FLAGS, SYNTHETIC_KEY, SYNTHETIC_OAUTH } = require('./native-contract-fixture');
 const INITIALIZE_INPUT = JSON.stringify({ type: 'control_request', request_id: 'native-contract-init', request: { subtype: 'initialize' } }) + '\n';
 
-function jsonResult(run) {
+function probeBounds(run) {
   assert.equal(run.timedOut, false, 'Native probe exceeded its bounded deadline');
   assert.equal(run.oversized, false, 'Native output exceeded its bound');
   // Do not include raw auth output or stderr in assertion diagnostics.
   assert.equal(run.stdout.includes(SYNTHETIC_KEY) || run.stdout.includes(SYNTHETIC_OAUTH), false, 'Synthetic credential appeared on stdout');
   assert.equal(run.stderr.includes(SYNTHETIC_KEY) || run.stderr.includes(SYNTHETIC_OAUTH), false, 'Synthetic credential appeared on stderr');
+}
+
+function jsonResult(run) {
+  probeBounds(run);
   let parsed;
   try { parsed = JSON.parse(run.stdout); } catch { assert.fail('Native CLI did not return the required JSON shape'); }
   return parsed;
+}
+
+function initializationResult(run) {
+  probeBounds(run);
+  assert.equal(run.code, 0, 'Native initialization metadata must complete');
+  let frames;
+  try { frames = run.stdout.trim().split(/\r?\n/).map(line => JSON.parse(line)); }
+  catch { assert.fail('Native initialization must return valid stream JSON'); }
+  const responses = frames.filter(frame => frame.type === 'control_response');
+  assert.equal(responses.length, 1, 'exactly one initialization response is required');
+  const response = responses[0];
+  assert.equal(response.response?.subtype, 'success');
+  assert.equal(response.response?.request_id, 'native-contract-init');
+  assert.ok(response.response.response && typeof response.response.response === 'object');
+  const notices = frames.filter(frame => frame !== response);
+  // Exact 2.1.322 can precede this metadata response with a UI invalidation.
+  // This is stream framing, not a model response or task-submission allowance.
+  assert.ok(notices.length <= (run.nativeVersion === '2.1.322' ? 1 : 0));
+  for (const frame of notices) {
+    assert.deepEqual(Object.keys(frame).sort(), ['event', 'session_id', 'subtype', 'type', 'uuid']);
+    assert.equal(frame.type, 'system'); assert.equal(frame.subtype, 'ui_invalidate');
+    assert.ok(typeof frame.event === 'string' && frame.event.length > 0 && frame.event.length <= 128);
+    for (const key of ['uuid', 'session_id']) assert.match(frame[key], /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
+  }
+  return response.response.response;
 }
 
 function inferenceRequests(f) {
@@ -108,6 +137,21 @@ function unavailablePrimary(f) {
     return false;
   });
 }
+
+test('initialization stream keeps exact response identity and only the characterized 322 UI notice', () => {
+  const response = { type: 'control_response', response: { subtype: 'success', request_id: 'native-contract-init', response: { commands: [] } } };
+  const notice = { type: 'system', subtype: 'ui_invalidate', event: 'synthetic-ui-event',
+    uuid: '11111111-1111-4111-8111-111111111111', session_id: '22222222-2222-4222-8222-222222222222' };
+  const run = (frames, nativeVersion = '2.1.322') => ({ code: 0, timedOut: false, oversized: false, stderr: '', nativeVersion,
+    stdout: frames.map(frame => JSON.stringify(frame)).join('\n') + '\n' });
+  assert.deepEqual(initializationResult(run([response])), { commands: [] });
+  assert.deepEqual(initializationResult(run([notice, response])), { commands: [] });
+  for (const nativeVersion of ['2.1.319', '2.1.321', '2.1.323']) assert.throws(() => initializationResult(run([notice, response], nativeVersion)));
+  for (const frames of [[], [notice], [response, response], [notice, notice, response],
+    [{ ...notice, subtype: 'init' }, response], [{ ...notice, unexpected: true }, response],
+    [{ ...response, response: { ...response.response, request_id: 'different' } }],
+    [{ type: 'result', result: 'unrelated' }, response]]) assert.throws(() => initializationResult(run(frames)));
+});
 
 test('native executable/version exceeds baseline and required flags remain available', { timeout: 60000 }, async t => {
   const f = await fixture(); t.after(() => f.close());
@@ -214,7 +258,7 @@ test('shared settings and CLAUDE.md survive hooks override and strict empty MCP'
     ]));
     return true;
   });
-  const initialization = jsonResult(await f.run(initArgs(), { input: INITIALIZE_INPUT })).response.response;
+  const initialization = initializationResult(await f.run(initArgs(), { input: INITIALIZE_INPUT }));
   const commandNames = initialization.commands.map(command => command.name);
   assert.ok(commandNames.includes('native-contract-user'), 'Shared user skill disappeared');
   assert.ok(commandNames.includes('native-contract-project'), 'Project skill disappeared');
@@ -298,11 +342,11 @@ test('without fallback settings, unavailable canonical Opus fails instead of rem
 test('BLOCKED boundary: auth and initialization metadata do not attest inherited fallback/effective routing', { timeout: 120000 }, async t => {
   const f = await fixture(); t.after(() => f.close()); await savedLogin(f);
   const beforeAuth = jsonResult(await f.run(['auth', 'status', '--json']));
-  const beforeInit = jsonResult(await f.run(initArgs(), { input: INITIALIZE_INPUT })).response.response;
+  const beforeInit = initializationResult(await f.run(initArgs(), { input: INITIALIZE_INPUT }));
   assert.equal(inferenceRequests(f).length, 0);
   await f.json('config/settings.json', { fallbackModel: ['claude-sonnet-4-6'] });
   const afterAuth = jsonResult(await f.run(['auth', 'status', '--json']));
-  const afterInit = jsonResult(await f.run(initArgs(), { input: INITIALIZE_INPUT })).response.response;
+  const afterInit = initializationResult(await f.run(initArgs(), { input: INITIALIZE_INPUT }));
   assert.deepEqual(authProjection(afterAuth), authProjection(beforeAuth));
   assert.deepEqual(afterInit.account, beforeInit.account);
   for (const field of ['settings', 'effectiveSettings', 'fallbackModel', 'modelOverrides', 'baseUrl', 'gateway']) {

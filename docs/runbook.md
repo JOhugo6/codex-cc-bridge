@@ -197,7 +197,7 @@ odmítnutí před odesláním úlohy, bez změny session, tahu a dokončených r
 | `SETTINGS_PROHIBITED_ENV` | V označené kategorii settings je nepovolená env položka. Zkontroluj zamýšlené nastavení lokálně; její název ani hodnotu nevkládej do reportu. |
 | `SETTINGS_UNSUPPORTED_FIELD` | Settings obsahují pole mimo ověřené schéma. Ověř kompatibilitu bridge s nativní verzí; neodstraňuj neznámou managed politiku. |
 | `SETTINGS_AUTH_HELPER`, `SETTINGS_MODEL_ROUTING`, `SETTINGS_HOOK_POLICY` | Konflikt se týká auth helperu, modelového routingu/fallbacku nebo hook policy. Ověř zamýšlenou konfiguraci v kategorii `source`. |
-| `POLICY_CACHE_RESTRICTION` | Nepodporovaný tvar či nebezpečný klíč restrikce, nebo jméno mimo kontrakt starší/neověřené verze. V ověřeném 2.1.319 běžné řetězcové jméno s jediným booleovským `allowed` odpovídá nativnímu schématu. Cache zachovej. |
+| `POLICY_CACHE_RESTRICTION` | Nepodporovaný tvar či nebezpečný klíč restrikce, nebo jméno mimo kontrakt starší/neověřené verze. V ověřených 2.1.319/2.1.322 běžné řetězcové jméno s jediným booleovským `allowed` odpovídá nativnímu schématu. Cache zachovej. |
 | `POLICY_CACHE_SCHEMA`, `REMOTE_SETTINGS_CACHE_SCHEMA` | Neodpovídá schéma nebo stav příslušné osobní cache. Ověř podporu nativní verze; cache nemaž ani neupravuj kvůli obejití kontroly. |
 | `PARENT_ENV_CONFLICT`, `AUTH_PROFILE_CONFLICT` | Konflikt pochází ze zděděného prostředí nebo volby auth profilu/federace; zkontroluj prostředí hostitele bridge. |
 | `UNSUPPORTED_AUTH_STORE`, `LEGACY_CONFIG_PRESENT`, `DESCRIPTOR_AUTH_PRESENT` | Je přítomen nepodporovaný auth store, legacy config nebo descriptor fallback. Zachovej zdroj a ověř zamýšlený nativní profil. |
@@ -230,7 +230,7 @@ Explicitní model bridge má přednost před osobním defaultem. Task launch pou
 nativní MCP konfiguraci. Osobní cache `remote-settings.json` / `policy-limits.json`
 se kontrolují podle úzkého schématu a zůstávají součástí kontroly změn před spuštěním;
 jejich pouhá přítomnost už nezpůsobuje `NATIVE_CONFLICT`. Nepodporované tvary
-policy a konfliktní routing se dál odmítají; rozšířený kontrakt 2.1.319 je popsán
+policy a konfliktní routing se dál odmítají; rozšířený kontrakt ověřených buildů je popsán
 níže. Nepodporovaný účet Enterprise nadále vrací `NATIVE_AUTH`.
 
 Pro issue #1 bylo staticky prozkoumáno oficiální
@@ -242,9 +242,31 @@ z claude.ai konektorů a při chybějící cache či fail-open výsledku vyžadu
 Bridge připouští pouze přesnou podobu `{ "allowed": boolean }` a ponechává hodnotu
 i její vynucení nativnímu procesu.
 
-### Issue #2: provozní kompatibilita 2.1.319
+<a id="issue-2-provozní-kompatibilita-21319"></a>
 
-`policy-limits.json.restrictions` je v přesném nativním 2.1.319 mapa řetězcových
+### Issue #2: ověřené buildy 2.1.319 a 2.1.322
+
+Rozšířený kontrakt byl ověřen samostatně pro oba oficiální Windows x64 buildy:
+
+| Build | SHA256 executable | Velikost |
+|---|---|---|
+| 2.1.319 | `2e055732c9d03d22700d9046251a8370b673607bfcc9e4d16a1b0e8fb1345cbd` | 344807072 B |
+| 2.1.322 | `345996b4bdbae21d817f750fae2f34cbf8d81224a5444c78136091d121beb298` | 346496160 B |
+
+Parsery, čtečky, settings filtry a doctor výstupy se porovnávají podle skutečného
+artefaktu. Ověření 2.1.319 samo nepokrývá 2.1.322; samotný restart staršího
+bridge jeho verzovaný seznam podpory nerozšíří. Jiné buildy se automaticky
+nepovažují za ekvivalentní.
+
+Native 2.1.322 posouvá vlastní profilový migration marker z 14 na 15.
+Po upgradu může první metadata průchod dokončit nativní migraci a bridge správně
+odmítne změnu chráněného globálního stavu jako `GLOBAL_METADATA_CHANGED`.
+Marker ručně nepřepisuj a nevypínej drift kontrolu. Před dalším výslovným
+preflight ověř skutečné změny, stejné přihlášení a zachování settings/policy;
+samotný očekávaný marker neospravedlňuje jiné změny. Syntetické 322 profily
+začínají v doloženém aktuálním formátu, aniž by se měnila produkční ochrana.
+
+`policy-limits.json.restrictions` je v obou ověřených buildech mapa řetězcových
 jmen na booleovské restrikce. Nativní parser přijímá i běžná jména, která nejsou
 v katalogu deklarovaných funkcí. Původní seznam tří jmen v bridge zaměňoval tento
 katalog za schéma cache a chybně odmítal `allow_cobalt_plinth_alkanet`.
@@ -257,7 +279,7 @@ dále omezit. Nativní čtečky a klasifikace omezujících stavů pracují tak�
 hodnoty neinterpretuje jako univerzální povolení, nepřevrací je a nevytváří aliasy.
 Celou původní cache ponechá nativnímu Claude k vynucení.
 
-Rozšířené schéma se použije pouze po ověření verze přesně `2.1.319`.
+Rozšířené schéma se použije pouze po ověření verze přesně `2.1.319` nebo `2.1.322`.
 První průchod kontroluje bezpečný strukturální tvar zdrojů. Poté proběhne
 omezené metadata `--version`; ještě před help/auth/doctor a před jakýmkoli
 taskem následuje úplná validace podle ověřené verze nad původním source ledgerem.
@@ -279,9 +301,9 @@ neobnovuje ani nemaže cache, neověřuje její původ pouhým checksumem a nena
 nativní kontroly podpisů či vazby k účtu. Profil, přihlášení, modelové a routing
 piny, Team attestation i kontroly source drift zůstávají aktivní.
 
-V přesném 2.1.319 nativní filtr ignoruje
+V ověřených 2.1.319 a 2.1.322 nativní filtr ignoruje
 `CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS` ve `settings.env`, včetně
-malých písmen a hodnot `1`, `0` či prázdného řetězce. Po ověření této verze
+malých písmen a hodnot `1`, `0` či prázdného řetězce. Po ověření podporované verze
 bridge tento konkrétní neúčinný settings člen přijme beze změny souboru.
 Uživatelské settings kvůli tomu není nutné editovat. Ve spouštěcím prostředí
 zůstává název odmítaný; bridge jej do něj nepřenáší ani nepřidává mezi bezpečné
@@ -290,7 +312,7 @@ env proměnné. Na jiných verzích settings odmítnutí zůstává.
 rozlišuje launch env a settings env; minimální verze funkce sama nedokládá
 shodnou filtraci ve všech pozdějších buildech.
 
-Přesný 2.1.319 podporuje také běžné uživatelské booleovské nastavení
+Oba ověřené buildy podporují také běžné uživatelské booleovské nastavení
 `skipWorkflowUsageWarning`. Jeho původní hodnota zůstává zachovaná; native ji
 používá pro varování o workflow v interaktivních relacích. Nativní
 noninteractive větev toto varování nevyžaduje. Bridge hodnotu nevynucuje,
@@ -302,9 +324,9 @@ commas, neplatná oddělení členů nebo jiné vadné zdroje se kvůli průchod
 preflight neignorují. Případná oprava uživatelského souboru musí zachovat
 zamýšlené hodnoty a omezení; jeho načtení může aktivovat dříve nenačtené hooks.
 
-Doctor v přesném 2.1.319 používá osobní výsledek
+Doctor v obou ověřených buildech používá osobní výsledek
 `Organization policy: not applicable to individual subscription plans`.
-Bridge jej přijímá jen pro tuto verzi po ověření podporovaného účtu, s právě
+Bridge jej přijímá jen pro tyto ověřené verze po ověření podporovaného účtu, s právě
 jedním remote a jedním organization řádkem. Neznámý, duplicitní, chybový či
 obecný stav „Loaded“ není potvrzením osobní způsobilosti.
 
@@ -337,17 +359,21 @@ registrovanou instalaci, argumenty a env. Nevybírej kvůli testu alternativní
 bridge, profil, poskytovatele či nativní CLI task.
 
 Přesný nativní test je oddělený od běžných CI prerequisites:
-nastav výslovně absolutní cestu k ověřenému executable 2.1.319:
+nastav výslovně absolutní cestu k ověřenému executable 2.1.322:
 
 ```powershell
 $env:NATIVE_CONTRACT_CLAUDE_EXE = (Get-Command claude.exe -CommandType Application | Select-Object -First 1).Source
-npm.cmd --prefix bridge run test:native:2.1.319
+npm.cmd --prefix bridge run test:native:2.1.322
 ```
 
 Test vyžaduje oficiální Windows x64
 executable s výše uvedeným SHA256, používá pouze vlastní syntetické profily
 a loopback/deny transport. Neověřuje přihlášení, entitlement ani postižený živý
 profil a nespouští úlohu přes alternativního poskytovatele.
+
+Samostatná regrese `test:native:2.1.319` zůstává dostupná; před jejím spuštěním
+vyber výslovně referenční executable 2.1.319. Změna cesty testovacího artefaktu
+nemění registraci, profil ani model živého bridge.
 
 `CLAUDE_AUTH_FAILED` (například native 401) po zahájení úlohy už není totéž co
 preflight chyba. Neprováděj automatický login/refresh ani znovuodeslání. Nejprve

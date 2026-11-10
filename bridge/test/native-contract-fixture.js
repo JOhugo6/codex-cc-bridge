@@ -141,8 +141,9 @@ async function fixture({ supportedVersion = SUPPORTED_VERSION, requiredFlags = R
       // exact replacement, while omission means a copy of the fixture default.
       const launchOptions = { ...options, env: { ...(options.env === undefined ? env : options.env) } };
       const launchArgs = [...args];
-      await checkCompatibility(launchNative, launchOptions, supportedVersion, expectedFlags);
-      return launchNative(launchArgs, { ...launchOptions, input: launchOptions.input ?? 'NATIVE_CONTRACT_SYNTHETIC_TASK' });
+      const compatibility = await checkCompatibility(launchNative, launchOptions, supportedVersion, expectedFlags);
+      const output = await launchNative(launchArgs, { ...launchOptions, input: launchOptions.input ?? 'NATIVE_CONTRACT_SYNTHETIC_TASK' });
+      return { ...output, nativeVersion: compatibility.version };
     },
     async close() {
       for (const kill of children) kill();

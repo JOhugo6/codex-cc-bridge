@@ -21,17 +21,19 @@ const MODEL_CATALOG = Object.freeze({ opus: 'claude-opus-5[1m]', 'opus[1m]': 'cl
 const FLAGS = Object.freeze(['--model', '--settings', '--strict-mcp-config', '--mcp-config', '--print', '--input-format', '--output-format']);
 const REMOTE_PERSONAL = 'Managed settings (remote): not fetched — requires an Enterprise or Team subscription';
 const ORG_PERSONAL = 'Organization policy: not applicable to Pro and Max accounts';
-// Exact 2.1.319 doctor formatter for its prosumer_oauth policy ineligibility.
+// Exact 2.1.319/2.1.322 doctor formatter for prosumer_oauth policy ineligibility.
 // This diagnostic is characterized separately from the legacy wording; do not
 // infer that another release or an arbitrary successful policy status is safe.
-const ORG_PERSONAL_319 = 'Organization policy: not applicable to individual subscription plans';
+const ORG_PERSONAL_INDIVIDUAL = 'Organization policy: not applicable to individual subscription plans';
 // Private schema capabilities. The pending capability admits only the same
 // bounded data shape for a guarded --version probe; it never authorizes a task.
 // Public/pure validators always retain the conservative legacy contract.
 const VERSION_PROBE_SCHEMA = Symbol('version-probe-schema');
 const NATIVE_319_SCHEMA = Symbol('native-2.1.319-schema');
-const IGNORED_SETTINGS_ENV_319 = 'CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS';
-const expandedSchema = schema => schema === VERSION_PROBE_SCHEMA || schema === NATIVE_319_SCHEMA;
+const NATIVE_322_SCHEMA = Symbol('native-2.1.322-schema');
+const IGNORED_SETTINGS_ENV = 'CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS';
+const verifiedSchema = schema => schema === NATIVE_319_SCHEMA || schema === NATIVE_322_SCHEMA;
+const expandedSchema = schema => schema === VERSION_PROBE_SCHEMA || verifiedSchema(schema);
 const LIMIT = 256 * 1024;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -143,18 +145,18 @@ function validateSettings(value, options) { return validateSettingsForSchema(val
 function validateSettingsForSchema(value, { managed = false, source = managed ? 'MANAGED_SETTINGS' : 'SETTINGS' } = {}, schema) {
   if (!object(value)) throw error('NATIVE_SOURCE');
   for (const [key, val] of Object.entries(value)) {
-    // Exact 2.1.319 ordinary boolean schema. This is a saved workflow usage-
+    // Exact 2.1.319/2.1.322 ordinary boolean schema. This is a saved workflow usage-
     // consent preference; native's reader and noninteractive prompt behavior
     // remain authoritative. Do not broaden managed policy or force its value.
-    const workflowWarning319 = !managed && expandedSchema(schema) && key === 'skipWorkflowUsageWarning';
-    if (!(managed ? MANAGED_FIELDS : ORDINARY_FIELDS).has(key) && !workflowWarning319) throw error('NATIVE_CONFLICT', 'SETTINGS_UNSUPPORTED_FIELD', source);
-    if (workflowWarning319 && typeof val !== 'boolean') throw error('NATIVE_SOURCE');
+    const workflowWarning = !managed && expandedSchema(schema) && key === 'skipWorkflowUsageWarning';
+    if (!(managed ? MANAGED_FIELDS : ORDINARY_FIELDS).has(key) && !workflowWarning) throw error('NATIVE_CONFLICT', 'SETTINGS_UNSUPPORTED_FIELD', source);
+    if (workflowWarning && typeof val !== 'boolean') throw error('NATIVE_SOURCE');
     if (key === 'env') {
       for (const name of Object.keys(envEntries(val))) {
-        // This exact name is discarded by 2.1.319's settings-env reader, before
+        // This exact name is discarded by 2.1.319/2.1.322's settings-env reader, before
         // environment application. Preserve its source bytes; never put it in
         // SAFE_NATIVE_ENV, process pins, or an outgoing process environment.
-        if (expandedSchema(schema) && name === IGNORED_SETTINGS_ENV_319) continue;
+        if (expandedSchema(schema) && name === IGNORED_SETTINGS_ENV) continue;
         if (prohibitedEnv(name)) throw error('NATIVE_CONFLICT', 'SETTINGS_PROHIBITED_ENV', source);
       }
     }
@@ -217,7 +219,7 @@ function validatePersonalCache(value, kind, schema) {
       || !Array.isArray(value.compliance_taints) || value.compliance_taints.length
       || value.monitoring_notice !== null) throw error('NATIVE_CONFLICT', 'POLICY_CACHE_SCHEMA', 'POLICY_CACHE');
   for (const [key, restriction] of Object.entries(value.restrictions)) {
-    // 2.1.319 explicitly accepts a string-keyed restriction record; its reader
+    // 2.1.319/2.1.322 explicitly accept a string-keyed restriction record; the reader
     // looks up the exact key and returns the saved boolean. A static feature-name
     // list is not that schema. Leave every record for native to enforce unchanged.
     // Earlier/unverified versions retain the established named subset.
@@ -634,7 +636,8 @@ function createRuntime(options, deps) {
       const launchSources = await inspectSources(context, deps, { ledger: launchLedger });
       const version = parseVersionOutput((await execute(['--version'])).stdout);
       if (!version) throw error('NATIVE_COMPATIBILITY');
-      context.sourceSchema = version === '2.1.319' ? NATIVE_319_SCHEMA : undefined;
+      context.sourceSchema = version === '2.1.319' ? NATIVE_319_SCHEMA
+        : version === '2.1.322' ? NATIVE_322_SCHEMA : undefined;
       launchLedger.revalidate();
       // Complete version-aware validation before help, auth, doctor or any task.
       // Reuse the original ledger; the version probe cannot establish new bytes.
@@ -670,7 +673,7 @@ function createRuntime(options, deps) {
         const remote = lines.filter(s => s.startsWith('Managed settings (remote):'));
         const organization = lines.filter(s => s.startsWith('Organization policy:'));
         if (remote.length !== 1 || remote[0] !== REMOTE_PERSONAL || organization.length !== 1
-            || !(organization[0] === ORG_PERSONAL || version === '2.1.319' && organization[0] === ORG_PERSONAL_319)
+            || !(organization[0] === ORG_PERSONAL || verifiedSchema(context.sourceSchema) && organization[0] === ORG_PERSONAL_INDIVIDUAL)
             || lines.some(s => /(?:settings|organization policy).*(?:error|invalid|failed|failure)|(?:error|invalid|failed|failure).*(?:settings|organization policy)/i.test(s))) throw error('NATIVE_POLICY');
       }
       await policy();

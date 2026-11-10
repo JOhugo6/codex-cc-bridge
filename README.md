@@ -156,7 +156,7 @@ Native konflikty obsahují povolený statický `reason` a případně kategorii
 `last_error` existující konverzace a `doctor --native`.
 [Význam důvodů a postup při issue #1](docs/runbook.md#native-chyby-před-spuštěním).
 
-[Kontrakt 2.1.319 pro issue #2](docs/runbook.md#issue-2-provozní-kompatibilita-21319)
+[Kontrakt ověřených buildů 2.1.319 a 2.1.322](docs/runbook.md#issue-2-ověřené-buildy-21319-a-21322)
 přijímá nativní mapu řetězcových restrikcí s jediným booleovským `allowed`,
 zachovává všechny hodnoty i nativní enforcement a odmítá vadné/nepodporované
 tvary. Konkrétní nativně ignorovaná settings env položka může zůstat beze změny;
